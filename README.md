@@ -8,13 +8,18 @@ Fast multilingual language identification using unigram language models. Trains 
 from unilid import load_model
 
 model = load_model("model.unilid")
-lang, tokens, score = model.predict("Hello world")
+lang, tokens, score = model.predict("The quick brown fox jumps over the lazy dog.")
 print(lang)  # 'eng'
 
 # Batch prediction (parallel)
-results = model.predict_batch(["Hello", "Hallo", "Bonjour"])
-for lang, tokens, score in results:
-    print(lang)  # 'eng', 'deu', 'fra'
+texts = [
+    "The quick brown fox jumps over the lazy dog.",
+    "Der schnelle braune Fuchs springt über den faulen Hund.",
+    "Le renard brun rapide saute par-dessus le chien paresseux.",
+]
+results = model.predict_batch(texts)
+for text, (lang, tokens, score) in zip(texts, results):
+    print(f"{lang}: {text[:50]}...")
 ```
 
 ## Installation
