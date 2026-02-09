@@ -258,7 +258,7 @@ For efficient storage and fast loading, trained models can be converted to a sin
 
 - **Single file**: One `.unilid` file vs hundreds of JSON files
 - **Fast loading**: Memory-mapped weights for instant access
-- **Compact**: ~2x smaller than raw JSON tokenizers
+- **Compact**: ~16x smaller than raw JSON tokenizers
 - **Memory efficient**: Batch loading with periodic GC
 
 ### Converting Models
