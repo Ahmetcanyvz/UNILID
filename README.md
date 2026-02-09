@@ -418,6 +418,13 @@ for text, (lang, tokens, score) in zip(texts, results):
 # Access model info
 print(f"Languages: {model.num_languages}")
 print(f"Available: {model.langs[:5]}...")
+
+# Access the base tokenizer for encoding/decoding
+tok = model.tokenizer
+encoded = tok.encode("Hello world")
+print(encoded.ids)      # token IDs
+print(encoded.tokens)   # token strings
+decoded = tok.decode(encoded.ids)
 ```
 
 #### Low-level API
