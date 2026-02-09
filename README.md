@@ -21,7 +21,7 @@ for lang, tokens, score in results:
 
 ```bash
 # Clone with submodules (required for custom tokenizers)
-git clone --recurse-submodules <repo-url> && cd UNILID
+git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
 
 # Create virtual environment
 python3 -m venv .venv
