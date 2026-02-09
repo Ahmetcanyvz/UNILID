@@ -22,6 +22,12 @@ for text, (lang, tokens, score) in zip(texts, results):
     print(f"{lang}: {text[:50]}...")
 ```
 
+## Pre-trained Models
+
+| Model | Languages | Training Data | Download |
+|-------|-----------|---------------|----------|
+| unilid-1940 | 1940 language-script combinations | 60M samples | [Download](https://polybox.ethz.ch/index.php/s/Kbb9TWkSSgQ8yoS) |
+
 ## Installation
 
 ```bash
