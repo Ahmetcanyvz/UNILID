@@ -62,7 +62,7 @@ git submodule update --init --recursive
 
 ### SentencePiece Setup
 
-The default language-specific training method (`--lang-training-method sp`) requires a [forked SentencePiece](https://github.com/cimeister/sentencepiece.git) CLI binary. The fork (branch `fixed-vocab-em`) adds fixed-vocabulary EM re-estimation support.
+The default language-specific training method (`--per-lang-counts-method sp`) requires a [forked SentencePiece](https://github.com/cimeister/sentencepiece.git) CLI binary. The fork (branch `fixed-vocab-em`) adds fixed-vocabulary EM re-estimation support.
 
 You need **both** the Python package (installed above via pip) and the compiled CLI:
 
@@ -162,7 +162,7 @@ python train.py \
     --wili-dir data/wili/ \
     --vocab-size 50000 \
     --base-training-method soft \
-    --lang-training-method hard
+    --per-lang-counts-method hard
 ```
 
 Resume a partially completed run (skips existing tokenizers):
@@ -200,8 +200,8 @@ python train.py \
 |------|---------|-------------|
 | `--vocab-size` | `100000` | Vocabulary size |
 | `--base-training-method` | `hf` | Base tokenizer training: `hf` (HuggingFace UnigramTrainer), `bpe` (HuggingFace BPE), `soft` (custom soft-EM), `hard` (custom hard-EM) |
-| `--lang-training-method` | `sp` | Per-language probability estimation: `sp` (SentencePiece EM, C implementation), `soft` (custom soft-EM), `hard` (custom hard-EM). All use EM; `sp` is fastest. |
-| `--byte-level / --no-byte-level` | `True` | Byte-level tokenization |
+| `--per-lang-counts-method` | `sp` | Per-language probability estimation: `sp` (SentencePiece EM, C implementation), `soft` (custom soft-EM), `hard` (custom hard-EM). All use EM; `sp` is fastest. |
+| `--byte-level / --char-level` | `--byte-level` | Byte-level or character-level tokenization |
 | `--initial-vocab FILE` | None | Seed vocabulary from existing tokenizer (`.json`) or text file (one token per line) |
 | `--seed` | `42` | Random seed |
 | `--max-samples` | None | Limit total input lines (for debugging) |
@@ -221,7 +221,7 @@ python train.py \
 | `--lang-batch-size` | `10` | Languages trained per batch (controls memory) |
 | `--results-dir` | `results_{K}k` | Output directory |
 | `--corpus-dir` | None | Reuse pre-split corpus directory |
-| `--base-tokenizer-path` | None | Path to existing base tokenizer |
+| `--base-tokenizer-path` | None | Path to load/save base tokenizer (loads if exists and `--reuse-base`) |
 | `--reuse-corpus / --no-reuse-corpus` | `True` | Reuse existing corpus files if found |
 | `--reuse-base / --no-reuse-base` | `True` | Reuse existing base tokenizer if found |
 | `--skip-existing-langs / --no-skip-existing-langs` | `True` | Skip languages with existing tokenizers |

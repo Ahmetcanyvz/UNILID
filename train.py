@@ -276,12 +276,16 @@ def main():
                     choices=["hf", "bpe", "soft", "hard"],
                     help="Base tokenizer training: hf = HuggingFace UnigramTrainer, "
                          "bpe = HuggingFace BPE, soft/hard = custom EM (default: hf)")
-    tr.add_argument("--lang-training-method", type=str, default="sp",
+    tr.add_argument("--per-lang-counts-method", type=str, default="sp",
                     choices=["sp", "soft", "hard"],
-                    help="Per-language reestimation: sp = SentencePiece, "
+                    help="Per-language probability estimation: sp = SentencePiece EM (C, fastest), "
                          "soft/hard = custom EM (default: sp)")
     tr.add_argument("--byte-level", dest="byte_level",
-                    action=argparse.BooleanOptionalAction, default=True)
+                    action="store_true", default=True,
+                    help="Use byte-level tokenization (default)")
+    tr.add_argument("--char-level", dest="byte_level",
+                    action="store_false",
+                    help="Use character-level tokenization")
     tr.add_argument("--initial-vocab", metavar="FILE", type=str, default=None,
                     help="Seed vocabulary from an existing tokenizer "
                          "(e.g. LLaMA/Mistral tokenizer.json, or a plain text "
@@ -311,7 +315,7 @@ def main():
     orch.add_argument("--corpus-dir", type=str, default=None,
                       help="Pre-split corpus dir to reuse")
     orch.add_argument("--base-tokenizer-path", type=str, default=None,
-                      help="Reuse existing base tokenizer")
+                      help="Path to load/save base tokenizer (loads if exists and --reuse-base)")
     orch.add_argument("--reuse-corpus", dest="reuse_corpus",
                       action=argparse.BooleanOptionalAction, default=True)
     orch.add_argument("--reuse-base", dest="reuse_base",
@@ -350,7 +354,7 @@ def main():
     os.makedirs(results_dir, exist_ok=True)
 
     logger.info("TRAINING starting | vocab=%d  base=%s  lang=%s  byte_level=%s",
-                vocab_size, args.base_training_method, args.lang_training_method,
+                vocab_size, args.base_training_method, args.per_lang_counts_method,
                 args.byte_level)
 
     # ── resolve corpus dir ──
@@ -471,7 +475,7 @@ def main():
     def _expected_path(lang):
         return os.path.join(
             tokenizers_dir,
-            f"langspec_{args.lang_training_method}_{lang}.tokenizer.json",
+            f"langspec_{args.per_lang_counts_method}_{lang}.tokenizer.json",
         )
 
     all_langs = list(final_languages)
@@ -521,7 +525,7 @@ def main():
             batch_langs[0], batch_langs[-1],
         )
 
-        lang_em_mode = args.lang_training_method if args.lang_training_method != "sp" else "soft"
+        lang_em_mode = args.per_lang_counts_method if args.per_lang_counts_method != "sp" else "soft"
         tok = LanguageSpecificUnigramLMTokenizer(
             vocab_size=vocab_size,
             reestimation_em_mode=lang_em_mode,
@@ -535,7 +539,7 @@ def main():
                 tokenizer_path_format=None,
                 load_base_if_exists=True,
                 load_tokenizers_if_exists=args.skip_existing_langs,
-                use_sentencepiece=(args.lang_training_method == "sp"),
+                use_sentencepiece=(args.per_lang_counts_method == "sp"),
             )
         except subprocess.CalledProcessError as e:
             logger.error("spm_train failed with exit code %d", e.returncode)
@@ -581,7 +585,7 @@ def main():
         "method": {
             "vocab_size": vocab_size,
             "base_training_method": args.base_training_method,
-            "lang_training_method": args.lang_training_method,
+            "per_lang_counts_method": args.per_lang_counts_method,
             "byte_level": args.byte_level,
             "seed": args.seed,
             "initial_vocab": os.path.abspath(args.initial_vocab) if args.initial_vocab else None,
