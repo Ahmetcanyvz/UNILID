@@ -1,6 +1,6 @@
 # UNILID
 
-Fast multilingual language identification using unigram language models. Trains a shared vocabulary across languages, then re-estimates per-language token probabilities via SentencePiece or EM. Supports byte-level tokenization, vocabulary seeding from external tokenizers, and Rayon-parallel batch inference.
+Fast multilingual language identification using unigram language models. Trains a shared vocabulary across languages, then re-estimates per-language token probabilities via EM (using either SentencePiece's C implementation or a custom Python implementation). Supports byte-level tokenization, vocabulary seeding from external tokenizers, and Rayon-parallel batch inference.
 
 ## Quick Start
 
@@ -199,8 +199,8 @@ python train.py \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vocab-size` | `100000` | Vocabulary size |
-| `--base-training-method` | `hf` | Base tokenizer: `hf` (HuggingFace UnigramTrainer), `soft` (soft EM), `hard` (hard EM) |
-| `--lang-training-method` | `sp` | Per-language: `sp` (SentencePiece CLI), `soft` (soft EM), `hard` (hard EM) |
+| `--base-training-method` | `hf` | Base tokenizer training: `hf` (HuggingFace UnigramTrainer), `soft` (custom soft-EM), `hard` (custom hard-EM/Viterbi) |
+| `--lang-training-method` | `sp` | Per-language probability estimation: `sp` (SentencePiece EM, C implementation), `soft` (custom soft-EM), `hard` (custom hard-EM). All use EM; `sp` is fastest. |
 | `--byte-level / --no-byte-level` | `True` | Byte-level tokenization |
 | `--initial-vocab FILE` | None | Seed vocabulary from existing tokenizer (`.json`) or text file (one token per line) |
 | `--seed` | `42` | Random seed |
