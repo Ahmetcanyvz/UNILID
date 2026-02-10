@@ -273,9 +273,9 @@ def main():
     tr.add_argument("--vocab-size", type=int, default=None,
                     help="Vocabulary size (default: 100000, or inferred from --initial-vocab)")
     tr.add_argument("--base-training-method", type=str, default="hf",
-                    choices=["hf", "soft", "hard"],
+                    choices=["hf", "bpe", "soft", "hard"],
                     help="Base tokenizer training: hf = HuggingFace UnigramTrainer, "
-                         "soft/hard = custom EM (default: hf)")
+                         "bpe = HuggingFace BPE, soft/hard = custom EM (default: hf)")
     tr.add_argument("--lang-training-method", type=str, default="sp",
                     choices=["sp", "soft", "hard"],
                     help="Per-language reestimation: sp = SentencePiece, "

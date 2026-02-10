@@ -199,7 +199,7 @@ python train.py \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--vocab-size` | `100000` | Vocabulary size |
-| `--base-training-method` | `hf` | Base tokenizer training: `hf` (HuggingFace UnigramTrainer), `soft` (custom soft-EM), `hard` (custom hard-EM/Viterbi) |
+| `--base-training-method` | `hf` | Base tokenizer training: `hf` (HuggingFace UnigramTrainer), `bpe` (HuggingFace BPE), `soft` (custom soft-EM), `hard` (custom hard-EM) |
 | `--lang-training-method` | `sp` | Per-language probability estimation: `sp` (SentencePiece EM, C implementation), `soft` (custom soft-EM), `hard` (custom hard-EM). All use EM; `sp` is fastest. |
 | `--byte-level / --no-byte-level` | `True` | Byte-level tokenization |
 | `--initial-vocab FILE` | None | Seed vocabulary from existing tokenizer (`.json`) or text file (one token per line) |
