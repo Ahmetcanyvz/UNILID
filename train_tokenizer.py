@@ -22,11 +22,13 @@ Submit all 9:
 
 import argparse
 import gc
+import hashlib
 import json
 import logging
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 import time
@@ -294,6 +296,33 @@ def main():
     tmp_dir = os.path.join(results_dir, "tmp")
 
     base_tok_path = os.path.join(tokenizers_dir, "base_tokenizer.json")
+
+    # ── Save config files for reproducibility ──
+    config_dir = os.path.join(results_dir, "config")
+    os.makedirs(config_dir, exist_ok=True)
+
+    config_files = {
+        "apertus_tokenizer": args.apertus_path,
+        "coarse_families": args.coarse_families,
+        "fine_families": args.fine_families,
+        "code_families": args.code_families,
+    }
+    config_checksums = {}
+    for name, src in config_files.items():
+        if os.path.isfile(src):
+            dst = os.path.join(config_dir, os.path.basename(src))
+            if not os.path.isfile(dst):
+                shutil.copy2(src, dst)
+            with open(src, "rb") as f:
+                config_checksums[name] = {
+                    "source": src,
+                    "sha256": hashlib.sha256(f.read()).hexdigest(),
+                }
+
+    # Save CLI args
+    args_path = os.path.join(config_dir, "args.json")
+    with open(args_path, "w") as f:
+        json.dump(vars(args), f, indent=2)
 
     logger.info("=" * 60)
     logger.info("JOB: %s × %s", args.base_method, args.grouping)
@@ -615,6 +644,7 @@ def main():
             "batch_size": args.batch_size,
             "seed": args.seed,
         },
+        "config_checksums": config_checksums,
         "data_sources": {
             "lang_parquets": len(lang_parquets),
             "eng_shards": len(eng_shards),
