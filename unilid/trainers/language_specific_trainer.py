@@ -159,7 +159,8 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
                     f"--num_sub_iterations={max(1, min(int(num_iterations), 20))}",
                     f"--unk_piece={self.unk_token}",
 
-                    f"--num_threads={min(20, multiprocessing.cpu_count()-1)}"
+                    f"--num_threads={min(20, multiprocessing.cpu_count()-1)}",
+                    "--max_sentence_length=32768",
                 ] + SP_DEFAULT_ARGS
 
                 logger.info(f"Running SentencePiece CLI command:\n{' '.join(command)}")

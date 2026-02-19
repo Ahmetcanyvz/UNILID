@@ -92,18 +92,36 @@ def write_texts(texts, path):
 
 
 def parquets_to_txt(parquet_paths, output_path, text_col="text"):
-    """Stream one or more parquets into a single text file. Returns line count."""
+    """Stream one or more parquets into a single text file.
+
+    Returns dict with stats: {lines, min_len, max_len, avg_len}.
+    """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     count = 0
+    total_len = 0
+    min_len = float("inf")
+    max_len = 0
     with open(output_path, "w", encoding="utf-8") as f:
         for ppath in parquet_paths:
             pf = pq.ParquetFile(ppath)
             for batch in pf.iter_batches(batch_size=10_000, columns=[text_col]):
                 for text in batch.column(text_col).to_pylist():
                     if text and text.strip():
-                        f.write(text.replace("\n", " ").strip() + "\n")
+                        line = text.replace("\n", " ").strip()
+                        f.write(line + "\n")
+                        n = len(line)
                         count += 1
-    return count
+                        total_len += n
+                        if n < min_len:
+                            min_len = n
+                        if n > max_len:
+                            max_len = n
+    return {
+        "lines": count,
+        "min_len": min_len if count > 0 else 0,
+        "max_len": max_len,
+        "avg_len": round(total_len / count, 1) if count > 0 else 0,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -239,6 +257,8 @@ def main():
                     help="Groups per batch for per-group training")
     tr.add_argument("--num-em-iterations", type=int, default=10,
                     help="SentencePiece EM iterations for per-group re-estimation")
+    tr.add_argument("--min-lines", type=int, default=50,
+                    help="Skip groups with fewer lines than this")
     tr.add_argument("--seed", type=int, default=42)
 
     # ── Resumability ──
@@ -428,9 +448,17 @@ def main():
     def group_tok_path(name):
         return os.path.join(tokenizers_dir, f"langspec_sp_{name}.tokenizer.json")
 
+    # Per-group report tracking
+    group_report = {}  # {group_name: {status, lines, min_len, max_len, avg_len, ...}}
+
     # Filter already-trained groups
     if args.skip_existing:
-        remaining = [g for g in all_group_names if not os.path.isfile(group_tok_path(g))]
+        remaining = []
+        for g in all_group_names:
+            if os.path.isfile(group_tok_path(g)):
+                group_report[g] = {"status": "skipped_existing"}
+            else:
+                remaining.append(g)
         skipped = len(all_group_names) - len(remaining)
         if skipped:
             logger.info("Skipping %d existing groups, %d remaining", skipped, len(remaining))
@@ -459,7 +487,7 @@ def main():
             bidx + 1, num_batches, len(batch), batch[0], batch[-1],
         )
 
-        # Step 1: Write parquets → tmp txt for this batch
+        # Step 1: Write parquets → tmp txt for this batch, collect stats
         batch_corpus = {}
         batch_tmp_files = []
 
@@ -468,17 +496,35 @@ def main():
             parquet_paths = groups[group_name]
 
             logger.info("  %s: %d parquets → %s", group_name, len(parquet_paths), tmp_path)
-            n = parquets_to_txt(parquet_paths, tmp_path)
-            logger.info("  %s: %d lines written", group_name, n)
+            stats = parquets_to_txt(parquet_paths, tmp_path)
+            logger.info(
+                "  %s: %d lines (len: min=%d, max=%d, avg=%.0f)",
+                group_name, stats["lines"], stats["min_len"], stats["max_len"], stats["avg_len"],
+            )
 
-            if n > 0:
+            if stats["lines"] < args.min_lines:
+                reason = f"too_few_lines ({stats['lines']} < {args.min_lines})"
+                logger.warning("  %s: %s, skipping", group_name, reason)
+                group_report[group_name] = {
+                    "status": "skipped_" + reason,
+                    "num_parquets": len(parquet_paths),
+                    **stats,
+                }
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            else:
                 batch_corpus[group_name] = tmp_path
                 batch_tmp_files.append(tmp_path)
-            else:
-                logger.warning("  %s: no data, skipping", group_name)
+                group_report[group_name] = {
+                    "status": "pending",
+                    "num_parquets": len(parquet_paths),
+                    **stats,
+                }
 
         if not batch_corpus:
-            logger.warning("Batch %d: empty, skipping", bidx + 1)
+            logger.warning("Batch %d: empty after filtering, skipping", bidx + 1)
             continue
 
         # Step 2: Train per-group tokenizers
@@ -502,12 +548,27 @@ def main():
                 use_sentencepiece=True,
                 num_reestimation_iterations=args.num_em_iterations,
             )
+            for g in batch_corpus:
+                group_report[g]["status"] = "trained"
         except subprocess.CalledProcessError as e:
             logger.error(
                 "spm_train failed (exit %d) for batch %d\nSTDERR: %s",
                 e.returncode, bidx + 1, e.stderr,
             )
-            raise
+            for g in batch_corpus:
+                if not os.path.isfile(group_tok_path(g)):
+                    group_report[g]["status"] = "failed"
+                    group_report[g]["error"] = f"spm_train exit {e.returncode}"
+                else:
+                    group_report[g]["status"] = "trained"
+        except Exception as e:
+            logger.error("Unexpected error in batch %d: %s", bidx + 1, e)
+            for g in batch_corpus:
+                if not os.path.isfile(group_tok_path(g)):
+                    group_report[g]["status"] = "failed"
+                    group_report[g]["error"] = str(e)
+                else:
+                    group_report[g]["status"] = "trained"
 
         # Step 3: Clean up tmp files
         for f in batch_tmp_files:
@@ -531,44 +592,57 @@ def main():
         pass
 
     # ══════════════════════════════════════════════════════════
-    # Summary
+    # Training report
     # ══════════════════════════════════════════════════════════
 
     total_time = time.time() - t0
     trained_count = sum(1 for g in all_group_names if os.path.isfile(group_tok_path(g)))
 
-    summary = {
+    # Aggregate status counts
+    status_counts = defaultdict(int)
+    for g, info in group_report.items():
+        status_counts[info["status"]] += 1
+
+    report = {
         "job": f"{args.base_method}_{args.grouping}",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "base_method": args.base_method,
-        "grouping": args.grouping,
-        "vocab_size": args.vocab_size,
-        "num_em_iterations": args.num_em_iterations,
-        "seed": args.seed,
-        "total_groups": len(all_group_names),
-        "trained_groups": trained_count,
-        "training_time_seconds": round(total_time, 1),
-        "base_tokenizer": os.path.abspath(base_tok_path),
-        "results_dir": os.path.abspath(results_dir),
+        "config": {
+            "base_method": args.base_method,
+            "grouping": args.grouping,
+            "vocab_size": args.vocab_size,
+            "num_em_iterations": args.num_em_iterations,
+            "min_lines": args.min_lines,
+            "batch_size": args.batch_size,
+            "seed": args.seed,
+        },
         "data_sources": {
             "lang_parquets": len(lang_parquets),
             "eng_shards": len(eng_shards),
             "code_parquets": len(code_parquets),
             "math_parquets": len(math_parquets),
         },
-        "groups": all_group_names,
+        "results": {
+            "total_groups": len(all_group_names),
+            "trained": trained_count,
+            "status_counts": dict(status_counts),
+            "training_time_seconds": round(total_time, 1),
+            "base_tokenizer": os.path.abspath(base_tok_path),
+            "results_dir": os.path.abspath(results_dir),
+        },
+        "groups": group_report,
     }
 
-    summary_path = os.path.join(results_dir, "training_summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False)
+    report_path = os.path.join(results_dir, "training_report.json")
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
 
     logger.info("=" * 60)
     logger.info(
         "DONE: %s × %s | %d/%d groups trained | %.1fs",
         args.base_method, args.grouping, trained_count, len(all_group_names), total_time,
     )
-    logger.info("Summary: %s", summary_path)
+    logger.info("Status: %s", dict(status_counts))
+    logger.info("Report: %s", report_path)
     logger.info("=" * 60)
 
 
