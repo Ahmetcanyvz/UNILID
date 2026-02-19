@@ -43,9 +43,8 @@ python "${UNILID_DIR}/train_tokenizer.py" \
     --coarse-families /users/ayavuz/tokenizer_train/coarse_families.json \
     --fine-families /users/ayavuz/tokenizer_train/fine_families.json \
     --code-families /users/ayavuz/tokenizer_train/code_lang_families.yaml \
-    --base-samples 10000 \
     --batch-size 10 \
-    --num-em-iterations 10 \
+    --num-em-iterations 20 \
     --seed 42
 
 echo "=============================="

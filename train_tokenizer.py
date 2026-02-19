@@ -74,13 +74,13 @@ def discover_parquets(directory, pattern="*.parquet"):
     return {p.stem: str(p) for p in sorted(d.glob(pattern))}
 
 
-def sample_from_parquet(parquet_path, max_lines, seed=42):
-    """Read a parquet and return up to max_lines sampled texts."""
+def sample_from_parquet(parquet_path, max_lines=None, seed=42):
+    """Read a parquet and return up to max_lines sampled texts (None = all)."""
     col = _detect_text_column(parquet_path)
     table = pq.read_table(parquet_path, columns=[col])
     texts = table.column(col).to_pylist()
     del table
-    if len(texts) > max_lines:
+    if max_lines is not None and len(texts) > max_lines:
         texts = random.Random(seed).sample(texts, max_lines)
     return [t for t in texts if t and t.strip()]
 
@@ -265,11 +265,11 @@ def main():
     tr = parser.add_argument_group("Training")
     tr.add_argument("--vocab-size", type=int, default=None,
                     help="Base vocab size (default: read from apertus tokenizer)")
-    tr.add_argument("--base-samples", type=int, default=10_000,
-                    help="Lines to sample per source for base tokenizer training")
+    tr.add_argument("--base-samples", type=int, default=0,
+                    help="Lines to sample per source for base tokenizer (0 = use all)")
     tr.add_argument("--batch-size", type=int, default=10,
                     help="Groups per batch for per-group training")
-    tr.add_argument("--num-em-iterations", type=int, default=10,
+    tr.add_argument("--num-em-iterations", type=int, default=20,
                     help="SentencePiece EM iterations for per-group re-estimation")
     tr.add_argument("--min-lines", type=int, default=0,
                     help="Skip groups with fewer lines than this (0 = no limit)")
@@ -424,7 +424,7 @@ def main():
                 sampled_files.append(dst)
                 continue
 
-            texts = sample_from_parquet(ppath, args.base_samples, seed=args.seed)
+            texts = sample_from_parquet(ppath, args.base_samples if args.base_samples > 0 else None, seed=args.seed)
             if texts:
                 write_texts(texts, dst)
                 sampled_files.append(dst)
