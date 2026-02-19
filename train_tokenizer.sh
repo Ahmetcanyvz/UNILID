@@ -17,7 +17,7 @@ GROUPING=${2:?"Usage: train_tokenizer.sh <base-method> <grouping>"}
 # ── Cluster config (adjust these) ──
 VENV_DIR="${VENV_DIR:-/users/ayavuz/venvs/unilid}"
 UNILID_DIR="${UNILID_DIR:-/users/ayavuz/UNILID}"
-RESULTS_BASE="${RESULTS_BASE:-/users/ayavuz/tokenizer_train/results}"
+RESULTS_BASE="${RESULTS_BASE:-/iopsstor/scratch/cscs/ayavuz/tokenizer_results}"
 
 # ── Activate environment ──
 source "${VENV_DIR}/bin/activate"
