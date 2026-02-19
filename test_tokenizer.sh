@@ -77,12 +77,12 @@ echo "--- Running minimal training test ---"
 python "${UNILID_DIR}/train_tokenizer.py" \
     --base-method apertus \
     --grouping per_lang \
-    --results-dir /tmp/tok_test_$$ \
+    --results-dir /users/ayavuz/test_output \
     --data-dir "${DATA_DIR}" \
     --apertus-path "${APERTUS}" \
     --coarse-families /users/ayavuz/tokenizer_train/coarse_families.json \
     --fine-families /users/ayavuz/tokenizer_train/fine_families.json \
-    --code-families "${DATA_DIR}/starcoder/code_lang_families.yaml" \
+    --code-families /users/ayavuz/tokenizer_train/code_lang_families.yaml \
     --batch-size 2 \
     --base-samples 100 \
     --num-em-iterations 2 \
@@ -90,11 +90,8 @@ python "${UNILID_DIR}/train_tokenizer.py" \
 
 echo ""
 echo "--- Test results ---"
-ls -la /tmp/tok_test_$$/tokenizers/ | head -20
-cat /tmp/tok_test_$$/training_summary.json
-
-# Clean up
-rm -rf /tmp/tok_test_$$
+ls -la /users/ayavuz/test_output/tokenizers/ | head -20
+cat /users/ayavuz/test_output/training_report.json
 
 echo ""
 echo "=============================="
