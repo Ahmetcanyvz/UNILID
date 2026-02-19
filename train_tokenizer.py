@@ -55,10 +55,7 @@ DATA_DIR = "/capstor/store/cscs/swissai/a139/datasets/tokenizer_training/tokeniz
 APERTUS_PATH = "/users/ayavuz/tokenizer_train/tokenizer.json"
 COARSE_FAMILIES_PATH = "/users/ayavuz/tokenizer_train/coarse_families.json"
 FINE_FAMILIES_PATH = "/users/ayavuz/tokenizer_train/fine_families.json"
-CODE_FAMILIES_PATH = (
-    "/capstor/store/cscs/swissai/a139/datasets/tokenizer_training/"
-    "tokenizer_training_dataset/starcoder/code_lang_families.yaml"
-)
+CODE_FAMILIES_PATH = "/users/ayavuz/tokenizer_train/code_lang_families.yaml"
 
 
 # ═══════════════════════════════════════════════════════════════
