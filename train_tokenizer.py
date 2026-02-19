@@ -234,8 +234,8 @@ def main():
 
     # ── Training ──
     tr = parser.add_argument_group("Training")
-    tr.add_argument("--vocab-size", type=int, default=100_000,
-                    help="Base vocab size (ignored for --base-method apertus)")
+    tr.add_argument("--vocab-size", type=int, default=None,
+                    help="Base vocab size (default: read from apertus tokenizer)")
     tr.add_argument("--base-samples", type=int, default=10_000,
                     help="Lines to sample per source for base tokenizer training")
     tr.add_argument("--batch-size", type=int, default=10,
@@ -256,6 +256,15 @@ def main():
     args = parser.parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    # ── Resolve vocab size from apertus tokenizer ──
+    from tokenizers import Tokenizer as HFTokenizer
+    apertus_tok = HFTokenizer.from_file(args.apertus_path)
+    apertus_vocab_size = len(apertus_tok.get_vocab())
+    if args.vocab_size is None:
+        args.vocab_size = apertus_vocab_size
+        logger.info("Vocab size from apertus tokenizer: %d", args.vocab_size)
+    del apertus_tok
 
     # ── Resolve output directory ──
     results_dir = args.results_dir or f"results_{args.base_method}_{args.grouping}"

@@ -43,7 +43,6 @@ python "${UNILID_DIR}/train_tokenizer.py" \
     --coarse-families /users/ayavuz/tokenizer_train/coarse_families.json \
     --fine-families /users/ayavuz/tokenizer_train/fine_families.json \
     --code-families /capstor/store/cscs/swissai/a139/datasets/tokenizer_training/tokenizer_training_dataset/starcoder/code_lang_families.yaml \
-    --vocab-size 100000 \
     --base-samples 10000 \
     --batch-size 10 \
     --num-em-iterations 10 \
