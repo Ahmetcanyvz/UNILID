@@ -74,10 +74,11 @@ def discover_parquets(directory, pattern="*.parquet"):
     return {p.stem: str(p) for p in sorted(d.glob(pattern))}
 
 
-def sample_from_parquet(parquet_path, max_lines, seed=42, text_col="text"):
+def sample_from_parquet(parquet_path, max_lines, seed=42):
     """Read a parquet and return up to max_lines sampled texts."""
-    table = pq.read_table(parquet_path, columns=[text_col])
-    texts = table.column(text_col).to_pylist()
+    col = _detect_text_column(parquet_path)
+    table = pq.read_table(parquet_path, columns=[col])
+    texts = table.column(col).to_pylist()
     del table
     if len(texts) > max_lines:
         texts = random.Random(seed).sample(texts, max_lines)
@@ -93,10 +94,20 @@ def write_texts(texts, path):
     return len(texts)
 
 
-def parquets_to_txt(parquet_paths, output_path, text_col="text"):
+def _detect_text_column(parquet_path):
+    """Auto-detect the text column in a parquet file."""
+    schema = pq.read_schema(parquet_path)
+    for col in ("text", "content", "code"):
+        if col in schema.names:
+            return col
+    raise KeyError(f"No text column found in {parquet_path}. Columns: {schema.names}")
+
+
+def parquets_to_txt(parquet_paths, output_path):
     """Stream one or more parquets into a single text file.
 
     Returns dict with stats: {lines, min_len, max_len, avg_len}.
+    Auto-detects the text column per parquet file.
     """
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -105,9 +116,10 @@ def parquets_to_txt(parquet_paths, output_path, text_col="text"):
     max_len = 0
     with open(output_path, "w", encoding="utf-8") as f:
         for ppath in parquet_paths:
+            col = _detect_text_column(ppath)
             pf = pq.ParquetFile(ppath)
-            for batch in pf.iter_batches(batch_size=10_000, columns=[text_col]):
-                for text in batch.column(text_col).to_pylist():
+            for batch in pf.iter_batches(batch_size=10_000, columns=[col]):
+                for text in batch.column(col).to_pylist():
                     if text and text.strip():
                         line = text.replace("\n", " ").strip()
                         f.write(line + "\n")
