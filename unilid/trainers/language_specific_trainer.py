@@ -18,6 +18,12 @@ from unilid.tokenizer_builder import _build_unigramlm_hf_tokenizer_from_lprobs
 from unilid.token_encoding import _get_hf_unigram_tokenizer_vocab
 from unilid.vocab_io import _write_sp_seed_vocab_file, write_hf_bytelevel_corpus
 from unilid.constants import SPECIAL_TOKENS, MIN_TOKEN_LOG_PROB, SP_DEFAULT_ARGS
+from unilid.validation import (
+    validate_components,
+    validate_token_order,
+    _load_tokenizer_json,
+    _get_token_list,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +248,12 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
             if not self.verify_byte_level_vocabulary(self.base_tokenizer.get_vocab()):
                 logger.warning("Base vocabulary may not contain all necessary byte tokens for byte-level tokenization")
 
+        # Cache base tokenizer info for per-lang validation
+        base_token_order = _get_token_list(self.base_tokenizer)
+        base_json_data = _load_tokenizer_json(Path(base_tokenizer_path))
+        expected_pretokenizer = base_json_data.get("pre_tokenizer")
+        expected_decoder = base_json_data.get("decoder")
+
         for lang_code, train_file in corpus_info.items():
             tk_path: Path = (
                 Path(tokenizer_path_format.format(lang_code=lang_code))
@@ -253,13 +265,20 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
             )
             if load_tokenizers_if_exists and tk_path.is_file():
                 tok = Tokenizer.from_file(str(tk_path))
-                self.per_lang_tok[lang_code] = {
-                    "tokenizer": tok,
-                    "scores":  _extract_log_scores(tok),
-                    "path": str(tk_path),
-                }
-                logger.info(f"Loaded tokenizer for {lang_code} from {tk_path}")
-                continue
+                # Validate loaded tokenizer against base
+                lang_tokens = _get_token_list(tok)
+                if lang_tokens != base_token_order:
+                    logger.warning(f"Token order mismatch for loaded {lang_code} tokenizer at {tk_path} — retraining")
+                else:
+                    lang_data = _load_tokenizer_json(tk_path)
+                    validate_components(lang_data, expected_pretokenizer, expected_decoder, lang_code)
+                    self.per_lang_tok[lang_code] = {
+                        "tokenizer": tok,
+                        "scores":  _extract_log_scores(tok),
+                        "path": str(tk_path),
+                    }
+                    logger.info(f"Loaded tokenizer for {lang_code} from {tk_path}")
+                    continue
 
             vocab_score_dict = _extract_log_scores(self.base_tokenizer)
 
@@ -285,6 +304,13 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
 
             tok = _build_unigramlm_hf_tokenizer_with_new_lprobs(self.base_tokenizer, token_log_probs, self.unk_token)
             tok.save(str(tk_path))
+
+            # Validate newly saved tokenizer
+            lang_tokens = _get_token_list(tok)
+            if lang_tokens != base_token_order:
+                logger.error(f"Token order mismatch in newly trained {lang_code} tokenizer — this is a bug")
+            lang_data = _load_tokenizer_json(tk_path)
+            validate_components(lang_data, expected_pretokenizer, expected_decoder, lang_code)
 
             lang_metadata = _create_base_metadata("LanguageSpecificUnigramLMTokenizer", "langspec")
             lang_metadata["training_config"] = {
