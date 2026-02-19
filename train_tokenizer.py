@@ -271,8 +271,8 @@ def main():
                     help="Groups per batch for per-group training")
     tr.add_argument("--num-em-iterations", type=int, default=10,
                     help="SentencePiece EM iterations for per-group re-estimation")
-    tr.add_argument("--min-lines", type=int, default=50,
-                    help="Skip groups with fewer lines than this")
+    tr.add_argument("--min-lines", type=int, default=0,
+                    help="Skip groups with fewer lines than this (0 = no limit)")
     tr.add_argument("--seed", type=int, default=42)
 
     # ── Resumability ──
