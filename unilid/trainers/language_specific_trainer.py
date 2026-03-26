@@ -180,7 +180,7 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
                     if p_hf not in vocab_dict:
                         additional_tokens.add(p_hf)
                     if p_hf in set(SPECIAL_TOKENS.values()) | {self.unk_token}:
-                        logp = float(vocab_dict[p_hf])
+                        logp = float(vocab_dict.get(p_hf, 0.0))
                     else:
                         logp = float(sp.get_score(i))
                     token_logps[p_hf] = logp

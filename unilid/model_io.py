@@ -269,7 +269,7 @@ class UnilidModel:
         base_tok, weights, self.langs = load_unilid(model_path)
 
         print("Pushing weights to Rust cache...")
-        base_tok.model.set_weight_sets(np.array(weights).tolist())
+        base_tok.model.set_weight_sets_numpy(np.ascontiguousarray(weights, dtype=np.float32))
 
         self.tokenizer = base_tok
         self.model = base_tok.model
@@ -346,7 +346,7 @@ class UnilidModel:
             gc.collect()
 
         print("Pushing weights to Rust cache...")
-        base_tok.model.set_weight_sets(weights.tolist())
+        base_tok.model.set_weight_sets_numpy(np.ascontiguousarray(weights, dtype=np.float32))
 
         self.tokenizer = base_tok
         self.model = base_tok.model
