@@ -370,15 +370,18 @@ class UnilidModel:
             return "".join(piece[0] for piece in pre)
         return text if text else None
 
-    def predict(self, text: str) -> Tuple[str, List[str], float]:
+    def predict(self, text: str, forward: bool = False) -> Tuple[str, List[str], float]:
         """Predict language for a single text."""
         pt = self.preprocess(text)
         if not pt:
             return None, [], float("-inf")
-        idx, tokens, score = self.model.best_of_cached_weight_sets(pt)
+        if forward:
+            idx, tokens, score = self.model.best_of_cached_weight_sets_forward(pt)
+        else:
+            idx, tokens, score = self.model.best_of_cached_weight_sets(pt)
         return self.langs[idx], tokens, score
 
-    def predict_batch(self, texts: List[str]) -> List[Tuple[str, List[str], float]]:
+    def predict_batch(self, texts: List[str], forward: bool = False) -> List[Tuple[str, List[str], float]]:
         """Predict languages for multiple texts (Rayon parallel)."""
         preprocessed, valid_idx = [], []
         for i, text in enumerate(texts):
@@ -390,7 +393,10 @@ class UnilidModel:
         if not preprocessed:
             return [(None, [], float("-inf"))] * len(texts)
 
-        batch_results = self.model.best_of_cached_weight_sets_batch(preprocessed)
+        if forward:
+            batch_results = self.model.best_of_cached_weight_sets_forward_batch(preprocessed)
+        else:
+            batch_results = self.model.best_of_cached_weight_sets_batch(preprocessed)
 
         results = [(None, [], float("-inf"))] * len(texts)
         for j, (idx, tokens, score) in enumerate(batch_results):
