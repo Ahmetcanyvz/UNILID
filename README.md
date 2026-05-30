@@ -22,6 +22,21 @@ for text, (lang, tokens, score) in zip(texts, results):
     print(f"{lang}: {text[:50]}...")
 ```
 
+### Decoding: Viterbi vs. Forward Marginalization
+
+By default, `predict` / `predict_batch` use **Viterbi** decoding, scoring each language by its single most likely segmentation. You can switch to **exact marginalization** via the forward algorithm, which sums probabilities over all valid segmentations:
+
+```python
+# Viterbi (default) — fastest, recommended
+lang, tokens, score = model.predict(text)
+
+# Forward marginalization — exact p(s | ℓ), ~2x slower
+lang, tokens, score = model.predict(text, forward=True)
+results = model.predict_batch(texts, forward=True)
+```
+
+The two modes give nearly identical accuracy in practice; Viterbi is recommended unless you need exact marginal likelihoods. The `eval_glotlid.py` and `eval_wili.py` scripts expose the same option via `--forward`.
+
 ## Pre-trained Models
 
 | Model | Languages | Training Data | Download |
