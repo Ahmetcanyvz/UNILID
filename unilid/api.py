@@ -4,8 +4,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-from transformers import AutoTokenizer
-
 from unilid import constants
 from unilid.metadata import _save_tokenizer_metadata, _create_base_metadata
 
@@ -31,6 +29,7 @@ def load_tokenizer_from_config(config):
 
     else:
         try:
+            from transformers import AutoTokenizer  # lazy: optional dep, only for non-standard tokenizers
             tokenizer = AutoTokenizer.from_pretrained(config['path'])
         except Exception as e:
             logger.info(f"Tried to load tokenizer via default method and could not {e}")

@@ -397,6 +397,33 @@ class UnilidModel:
             results[valid_idx[j]] = (self.langs[idx], tokens, score)
         return results
 
+    def predict_normalized(self, text: str, alpha: float = 1.0) -> Tuple[str, List[str], float]:
+        """Predict language using length-normalized scores (score / n_tokens^alpha)."""
+        pt = self.preprocess(text)
+        if not pt:
+            return None, [], float("-inf")
+        idx, tokens, score = self.model.best_of_cached_weight_sets_normalized(pt, alpha)
+        return self.langs[idx], tokens, score
+
+    def predict_normalized_batch(self, texts: List[str], alpha: float = 1.0) -> List[Tuple[str, List[str], float]]:
+        """Predict languages using length-normalized scores (Rayon parallel)."""
+        preprocessed, valid_idx = [], []
+        for i, text in enumerate(texts):
+            pt = self.preprocess(text)
+            if pt:
+                preprocessed.append(pt)
+                valid_idx.append(i)
+
+        if not preprocessed:
+            return [(None, [], float("-inf"))] * len(texts)
+
+        batch_results = self.model.best_of_cached_weight_sets_normalized_batch(preprocessed, alpha)
+
+        results = [(None, [], float("-inf"))] * len(texts)
+        for j, (idx, tokens, score) in enumerate(batch_results):
+            results[valid_idx[j]] = (self.langs[idx], tokens, score)
+        return results
+
     @property
     def num_languages(self) -> int:
         return len(self.langs)
