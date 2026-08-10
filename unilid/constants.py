@@ -10,6 +10,17 @@ INITIAL_VOCAB_MULT_FACTOR = 8
 MIN_CHAR_OCCURENCE_THRESHOLD = 2
 MIN_TOKEN_PROB = 1e-12
 MIN_TOKEN_LOG_PROB = math.log(MIN_TOKEN_PROB)
+# Log-prob assigned at container-assembly time to base-vocab tokens absent from a
+# language's tokenizer file. Far below MIN_TOKEN_LOG_PROB by design: such a token
+# should be unreachable for that language, whereas the training floor is an
+# ordinary small probability. Previously an unnamed -1e30 duplicated across
+# model_io.py and eval.py.
+MISSING_TOKEN_FILL_LOG_PROB = -1e30
+# Detection bound for the fill above: any weight-row entry at or below this bound
+# means the assembly fill leaked through (the trained tokenizer file did not
+# cover the full base vocabulary). Between the fill (-1e30) and any legitimate
+# trained log-prob by many orders of magnitude.
+MISSING_TOKEN_FILL_DETECTION_BOUND = -1e29
 MAX_BYTE_TOKEN_LEN = 50
 MAX_CHAR_TOKEN_LEN = 35
 MIN_TOKENIZER_LANG_TRAINING_LINES = 5000

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "unilid"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fast multilingual language identification using unigram language models"
 readme = "README.md"
 license = {text = "MIT"}
@@ -48,9 +48,13 @@ dev = [
 Homepage = "https://github.com/Ahmetcanyvz/UNILID"
 Repository = "https://github.com/Ahmetcanyvz/UNILID"
 
+# Note: the former unilid-eval entry point targeted unilid.cli:eval_main, which
+# never existed (eval.py is a repository script, not a package module); it is
+# removed rather than left broken.
 [project.scripts]
-unilid-convert = "unilid.model_io:_cli_convert"
-unilid-eval = "unilid.cli:eval_main"
+unilid-convert = "unilid.model_io:main"
+unilid-add-language = "unilid.add_language:main"
+unilid-calibrate = "unilid.calibrate_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["unilid*"]
