@@ -4,7 +4,7 @@ UNILID model I/O utilities.
 .unilid format (custom binary):
   Header (32 bytes):
     - magic: 8 bytes "UNILID\x00\x00"
-    - version: uint32
+    - version: uint32 (1 = base model only; 2 = calibration section appended)
     - num_langs: uint32
     - vocab_size: uint32
     - base_tok_len: uint32
@@ -14,6 +14,9 @@ UNILID model I/O utilities.
     - base_tokenizer JSON (base_tok_len bytes, utf-8)
     - langs JSON array (langs_len bytes, utf-8)
     - weights: float32[num_langs * vocab_size]
+  Version 2 only, after the weights:
+    - calibration_len: uint64 little-endian
+    - calibration JSON (calibration_len bytes, utf-8; schema in unilid.calibration)
 """
 import gc
 import json
@@ -24,10 +27,22 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from tokenizers import Tokenizer
 
-__version__ = 1
+from .calibration import Calibration, UnilidCalibrationError, \
+    apply_unseen_token_constant, re_examine
+from .constants import MISSING_TOKEN_FILL_LOG_PROB
+
+# Highest container version this reader accepts; distinct from the per-write
+# version, which depends on whether a calibration is bundled (a single shared
+# constant would silently change every base-model write when raised).
+FORMAT_VERSION_MAX = 2
+VERSION_BASE = 1
+VERSION_CALIBRATED = 2
+__version__ = VERSION_BASE  # kept for backward compatibility of importers
 MAGIC = b"UNILID\x00\x00"
 HEADER_FMT = "<8sIIIII4x"  # magic, version, num_langs, vocab_size, base_tok_len, langs_len, padding
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
+CAL_LEN_FMT = "<Q"
+CAL_LEN_SIZE = struct.calcsize(CAL_LEN_FMT)
 
 
 def _get_vocab_with_scores(tok: Tokenizer) -> List[Tuple[str, float]]:
@@ -37,13 +52,49 @@ def _get_vocab_with_scores(tok: Tokenizer) -> List[Tuple[str, float]]:
     return attributes["vocab"]
 
 
-def save_unilid(model_dir: Path, output_path: Path) -> Path:
+def write_unilid(output_path: Path, base_tok_bytes: bytes, langs: List[str],
+                 weights: np.ndarray,
+                 calibration: Optional[Calibration] = None) -> Path:
+    """Write a .unilid container from explicit components.
+
+    ``langs`` order defines the weight-row order verbatim (no filename-based
+    discovery or re-sorting happens here). Writes version 1 without a
+    calibration, byte-identical to the historical format; version 2 with one.
+    """
+    output_path = Path(output_path)
+    if weights.dtype != np.float32:
+        raise ValueError(f"weights must be float32, got {weights.dtype}")
+    if weights.ndim != 2 or weights.shape[0] != len(langs):
+        raise ValueError(
+            f"weights shape {weights.shape} does not match {len(langs)} languages")
+    langs_bytes = json.dumps(langs).encode("utf-8")
+    version = VERSION_CALIBRATED if calibration is not None else VERSION_BASE
+
+    with open(output_path, "wb") as f:
+        f.write(struct.pack(
+            HEADER_FMT, MAGIC, version, len(langs), weights.shape[1],
+            len(base_tok_bytes), len(langs_bytes)))
+        f.write(base_tok_bytes)
+        f.write(langs_bytes)
+        f.write(np.ascontiguousarray(weights).tobytes())
+        if calibration is not None:
+            cal_bytes = calibration.to_json_bytes()
+            f.write(struct.pack(CAL_LEN_FMT, len(cal_bytes)))
+            f.write(cal_bytes)
+    return output_path
+
+
+def save_unilid(model_dir: Path, output_path: Path,
+                calibration: Optional[Calibration] = None) -> Path:
     """
     Convert tokenizers directory to .unilid format.
 
     Args:
         model_dir: Directory containing tokenizers/ folder
         output_path: Output .unilid file path
+        calibration: Optional calibration artifact to bundle (writes a version-2
+            container; without it the output is byte-identical to the
+            historical version-1 format)
 
     Returns:
         Path to saved .unilid file
@@ -54,6 +105,16 @@ def save_unilid(model_dir: Path, output_path: Path) -> Path:
     tok_dir = model_dir / "tokenizers"
     if not tok_dir.exists():
         tok_dir = model_dir
+
+    sidecar = tok_dir / "calibration.json"
+    if calibration is None and sidecar.exists():
+        raise UnilidCalibrationError(
+            f"{sidecar} exists (this directory was unpacked from a calibrated "
+            f"model) but no calibration was passed; packing without it would "
+            f"silently downgrade the model to an uncalibrated version-1 file. "
+            f"Pass calibration=Calibration.from_json_file({str(sidecar)!r}) "
+            f"(or --calibration on the CLI), or delete the file to pack a "
+            f"base model deliberately.")
 
     # Find base tokenizer
     base_path = tok_dir / "langspec_base_tokenizer.json"
@@ -78,7 +139,7 @@ def save_unilid(model_dir: Path, output_path: Path) -> Path:
     print(f"Found {len(lang_files)} language tokenizers, vocab size {V}")
 
     # Extract weights
-    very_neg = np.float32(-1e30)
+    very_neg = np.float32(MISSING_TOKEN_FILL_LOG_PROB)
     langs = []
     weights = np.empty((len(lang_files), V), dtype=np.float32)
 
@@ -106,26 +167,7 @@ def save_unilid(model_dir: Path, output_path: Path) -> Path:
             gc.collect()
 
     print(f"Weights shape: {weights.shape}")
-    langs_bytes = json.dumps(langs).encode("utf-8")
-
-    # Write file
-    with open(output_path, "wb") as f:
-        # Header
-        header = struct.pack(
-            HEADER_FMT,
-            MAGIC,
-            __version__,
-            len(langs),
-            V,
-            len(base_tok_bytes),
-            len(langs_bytes),
-        )
-        f.write(header)
-
-        # Body
-        f.write(base_tok_bytes)
-        f.write(langs_bytes)
-        f.write(weights.tobytes())
+    write_unilid(output_path, base_tok_bytes, langs, weights, calibration)
 
     # Report size
     orig_size = sum(f.stat().st_size for f in tok_dir.glob("*.json"))
@@ -148,6 +190,17 @@ def load_unilid(model_path: Path) -> Tuple[Tokenizer, np.ndarray, List[str]]:
     Returns:
         Tuple of (base_tokenizer, weights_array, langs_list)
     """
+    base_tok_bytes, weights, langs = load_unilid_raw(model_path)
+    base_tok = Tokenizer.from_str(base_tok_bytes.decode("utf-8"))
+    print(f"Loaded {len(langs)} languages, vocab size {weights.shape[1]}")
+    return base_tok, weights, langs
+
+
+def load_unilid_raw(model_path: Path) -> Tuple[bytes, np.ndarray, List[str]]:
+    """Load a .unilid container returning the base tokenizer's ORIGINAL bytes
+    (not a re-serialization), the memmapped weights, and the language list.
+    Used wherever the base-tokenizer section must be copied through
+    byte-identically (add_language, calibrate CLI)."""
     model_path = Path(model_path)
 
     with open(model_path, "rb") as f:
@@ -157,16 +210,16 @@ def load_unilid(model_path: Path) -> Tuple[Tokenizer, np.ndarray, List[str]]:
 
         if magic != MAGIC:
             raise ValueError(f"Invalid .unilid file (bad magic)")
-        if version > __version__:
-            raise ValueError(f"Unsupported version {version}")
+        if version > FORMAT_VERSION_MAX:
+            raise ValueError(
+                f"Unsupported .unilid version {version} (this unilid reads up "
+                f"to {FORMAT_VERSION_MAX}); upgrade the unilid package")
 
         # Read body
         base_tok_bytes = f.read(base_tok_len)
         langs_bytes = f.read(langs_len)
         weights_offset = f.tell()
 
-    # Parse
-    base_tok = Tokenizer.from_str(base_tok_bytes.decode("utf-8"))
     langs = json.loads(langs_bytes.decode("utf-8"))
 
     # Memory-map weights for fast loading
@@ -177,9 +230,43 @@ def load_unilid(model_path: Path) -> Tuple[Tokenizer, np.ndarray, List[str]]:
         offset=weights_offset,
         shape=(num_langs, vocab_size),
     )
+    return base_tok_bytes, weights, langs
 
-    print(f"Loaded {len(langs)} languages, vocab size {vocab_size}")
-    return base_tok, weights, langs
+
+def read_calibration(model_path: Path) -> Optional[Calibration]:
+    """Read the bundled calibration from a .unilid file.
+
+    Returns None for a version-1 file. For a version-2 file the calibration
+    section is required: a truncated or absent section is a corruption error,
+    never silently ignored.
+    """
+    model_path = Path(model_path)
+    with open(model_path, "rb") as f:
+        header = f.read(HEADER_SIZE)
+        magic, version, num_langs, vocab_size, base_tok_len, langs_len = struct.unpack(HEADER_FMT, header)
+        if magic != MAGIC:
+            raise ValueError(f"Invalid .unilid file (bad magic)")
+        if version > FORMAT_VERSION_MAX:
+            raise ValueError(
+                f"Unsupported .unilid version {version} (this unilid reads up "
+                f"to {FORMAT_VERSION_MAX}); upgrade the unilid package")
+        if version < VERSION_CALIBRATED:
+            return None
+        cal_offset = (HEADER_SIZE + base_tok_len + langs_len
+                      + num_langs * vocab_size * 4)
+        f.seek(cal_offset)
+        len_bytes = f.read(CAL_LEN_SIZE)
+        if len(len_bytes) != CAL_LEN_SIZE:
+            raise UnilidCalibrationError(
+                f"version-{version} .unilid file is truncated: calibration "
+                f"length field missing at offset {cal_offset} in {model_path}")
+        (cal_len,) = struct.unpack(CAL_LEN_FMT, len_bytes)
+        cal_bytes = f.read(cal_len)
+        if len(cal_bytes) != cal_len:
+            raise UnilidCalibrationError(
+                f".unilid calibration section is truncated: expected "
+                f"{cal_len} bytes, found {len(cal_bytes)} in {model_path}")
+    return Calibration.from_json_bytes(cal_bytes)
 
 
 def unpack_unilid(model_path: Path, output_dir: Path) -> Path:
@@ -239,6 +326,12 @@ def unpack_unilid(model_path: Path, output_dir: Path) -> Path:
         lang_path = output_dir / f"langspec_sp_{lang}.tokenizer.json"
         lang_tok.save(str(lang_path))
 
+    calibration = read_calibration(model_path)
+    if calibration is not None:
+        cal_path = output_dir / "calibration.json"
+        calibration.to_json_file(cal_path)
+        print(f"Saved calibration: {cal_path}")
+
     print(f"\nUnpacked to: {output_dir}")
     print(f"  - 1 base tokenizer")
     print(f"  - {len(langs)} language tokenizers")
@@ -246,36 +339,112 @@ def unpack_unilid(model_path: Path, output_dir: Path) -> Path:
 
 
 class UnilidModel:
-    """High-level model wrapper for inference."""
+    """High-level model wrapper for inference.
 
-    def __init__(self, model_path):
+    Calibrated inference (the paper's "Calibrated UniLID") is the default: the
+    unseen-token constant is applied to the weight matrix at load time and
+    low-margin predictions into the two re-examined groups are re-examined at
+    prediction time. Pass ``calibrated=False`` for the base model's behavior.
+    """
+
+    def __init__(self, model_path, calibrated: bool = True,
+                 calibration=None):
         """
         Load model from .unilid file or tokenizers directory.
 
         Args:
             model_path: Path to .unilid file or directory containing tokenizers/
+            calibrated: Use calibrated inference (default). Requires a
+                calibration artifact: bundled in a version-2 .unilid file, or
+                supplied via ``calibration``. Raises UnilidCalibrationError if
+                neither is present.
+            calibration: Path to a standalone calibration JSON. Only valid when
+                the model file does not already bundle one.
         """
         model_path = Path(model_path)
+        self.calibrated = False
+        # Set only when calibrated inference is active: self.calibration is not
+        # None if and only if self.calibrated (a bundled artifact is NOT parsed
+        # onto the instance in base mode, so audits can trust the attribute).
+        self.calibration = None
+        self.last_reexamination_stats = None
+
+        if not calibrated and calibration is not None:
+            raise UnilidCalibrationError(
+                "calibration= was given together with calibrated=False; drop "
+                "one (a supplied calibration would be silently unused)")
 
         if model_path.suffix == ".unilid" or (model_path.is_file() and str(model_path).endswith(".unilid")):
-            self._load_from_unilid(model_path)
+            bundled = read_calibration(model_path)
+            if bundled is not None and calibration is not None:
+                raise UnilidCalibrationError(
+                    f"{model_path} already bundles a calibration; drop the "
+                    f"calibration= argument (unpack and re-bundle to replace it)")
+            cal = bundled if bundled is not None else (
+                Calibration.from_json_file(calibration)
+                if calibration is not None else None)
+            self._load_from_unilid(model_path, calibrated=calibrated,
+                                   cal=cal, source=str(model_path))
         elif model_path.is_dir():
-            self._load_from_dir(model_path)
+            cal = (Calibration.from_json_file(calibration)
+                   if calibration is not None else None)
+            self._load_from_dir(model_path, calibrated=calibrated, cal=cal)
         else:
             raise ValueError(f"Unknown model format: {model_path}. Expected .unilid file or directory.")
 
-    def _load_from_unilid(self, model_path: Path):
+    def _require_scorer_methods(self):
+        """The pinned tokenizers fork provides the numpy weight-loading path and
+        the calibrated-inference scorers; an older build of the extension is a
+        setup error, reported with the fix rather than degraded silently."""
+        missing = [name for name in ("set_weight_sets_numpy",
+                                     "top_k_of_cached_weight_sets_batch",
+                                     "tokens_of_cached_weight_set_batch")
+                   if not hasattr(self.model, name)]
+        if missing:
+            raise RuntimeError(
+                f"the installed tokenizers extension is missing {missing}; "
+                f"rebuild the bundled fork (cd tokenizers/bindings/python && "
+                f"maturin develop --release) as described in the README")
+
+    def _init_calibrated(self, weights: np.ndarray, cal, source: str):
+        """Validate the calibration against this model, apply the unseen-token
+        constant, and push the clamped matrix to the Rust cache."""
+        if cal is None:
+            raise UnilidCalibrationError(
+                f"calibrated=True (the default) but {source} carries no "
+                f"calibration artifact. Either load the calibrated model "
+                f"release (a version-2 .unilid file), pass calibration=<path "
+                f"to calibration.json>, or pass calibrated=False for base "
+                f"(uncalibrated) inference.")
+        self._runtime = cal.runtime_for(self.langs)
+        w_cal, n_mod = apply_unseen_token_constant(
+            weights, cal.unseen_token_constant)
+        print(f"Applied unseen-token constant {cal.unseen_token_constant} "
+              f"({n_mod}/{len(self.langs)} languages modified)")
+        self.model.set_weight_sets_numpy(w_cal)
+        del w_cal
+        self.calibration = cal
+        self.calibrated = True
+
+    def _load_from_unilid(self, model_path: Path, calibrated: bool = True,
+                          cal=None, source: str = ""):
         """Load from .unilid file."""
         base_tok, weights, self.langs = load_unilid(model_path)
-
-        print("Pushing weights to Rust cache...")
-        base_tok.model.set_weight_sets_numpy(np.ascontiguousarray(weights, dtype=np.float32))
 
         self.tokenizer = base_tok
         self.model = base_tok.model
         self.pre_tok = base_tok.pre_tokenizer
         self.normalizer = base_tok.normalizer
         self._lang_to_idx = {lang: i for i, lang in enumerate(self.langs)}
+
+        print("Pushing weights to Rust cache...")
+        self._require_scorer_methods()
+        if calibrated:
+            self._init_calibrated(weights, cal, source or str(model_path))
+        else:
+            # memmap passes straight through the buffer protocol: the rows are
+            # copied into the Rust cache without materializing a Python list.
+            self.model.set_weight_sets_numpy(weights)
 
         del weights
         gc.collect()
@@ -286,7 +455,8 @@ class UnilidModel:
         """Load directly from tokenizers directory (deprecated, use __init__ instead)."""
         return cls(model_dir)
 
-    def _load_from_dir(self, model_dir: Path):
+    def _load_from_dir(self, model_dir: Path, calibrated: bool = True,
+                       cal=None):
         """Load from tokenizers directory (streaming)."""
         from tqdm import tqdm
 
@@ -312,7 +482,7 @@ class UnilidModel:
         print(f"Loading {len(lang_files)} languages, vocab size {V}")
 
         # Pre-allocate numpy array (float32 = 4 bytes vs Python float = 8+ bytes)
-        very_neg = np.float32(-1e30)
+        very_neg = np.float32(MISSING_TOKEN_FILL_LOG_PROB)
         langs = []
         weights = np.full((len(lang_files), V), very_neg, dtype=np.float32)
 
@@ -345,15 +515,19 @@ class UnilidModel:
             # Clean up after each batch
             gc.collect()
 
-        print("Pushing weights to Rust cache...")
-        base_tok.model.set_weight_sets_numpy(np.ascontiguousarray(weights, dtype=np.float32))
-
         self.tokenizer = base_tok
         self.model = base_tok.model
         self.pre_tok = base_tok.pre_tokenizer
         self.normalizer = base_tok.normalizer
         self.langs = langs
         self._lang_to_idx = {lang: i for i, lang in enumerate(langs)}
+
+        print("Pushing weights to Rust cache...")
+        self._require_scorer_methods()
+        if calibrated:
+            self._init_calibrated(weights, cal, str(model_dir))
+        else:
+            self.model.set_weight_sets_numpy(weights)
 
         del weights
         gc.collect()
@@ -371,7 +545,13 @@ class UnilidModel:
         return text if text else None
 
     def predict(self, text: str, forward: bool = False) -> Tuple[str, List[str], float]:
-        """Predict language for a single text."""
+        """Predict language for a single text. ``forward=True`` scores by
+        marginalizing over all segmentations (base mode only: the calibration
+        thresholds are defined on Viterbi margins)."""
+        if self.calibrated:
+            if forward:
+                self._require_base_mode("predict(forward=True)")
+            return self.predict_batch([text])[0]
         pt = self.preprocess(text)
         if not pt:
             return None, [], float("-inf")
@@ -382,7 +562,12 @@ class UnilidModel:
         return self.langs[idx], tokens, score
 
     def predict_batch(self, texts: List[str], forward: bool = False) -> List[Tuple[str, List[str], float]]:
-        """Predict languages for multiple texts (Rayon parallel)."""
+        """Predict languages for multiple texts (Rayon parallel).
+        ``forward=True`` scores by marginalizing over all segmentations (base
+        mode only: the calibration thresholds are defined on Viterbi margins).
+        """
+        if forward and self.calibrated:
+            self._require_base_mode("predict_batch(forward=True)")
         preprocessed, valid_idx = [], []
         for i, text in enumerate(texts):
             pt = self.preprocess(text)
@@ -393,10 +578,85 @@ class UnilidModel:
         if not preprocessed:
             return [(None, [], float("-inf"))] * len(texts)
 
-        if forward:
+        if self.calibrated:
+            batch_results = self._predict_batch_calibrated(preprocessed)
+        elif forward:
             batch_results = self.model.best_of_cached_weight_sets_forward_batch(preprocessed)
         else:
             batch_results = self.model.best_of_cached_weight_sets_batch(preprocessed)
+
+        results = [(None, [], float("-inf"))] * len(texts)
+        for j, (idx, tokens, score) in enumerate(batch_results):
+            results[valid_idx[j]] = (self.langs[idx], tokens, score)
+        return results
+
+    def _predict_batch_calibrated(self, preprocessed: List[str]
+                                  ) -> List[Tuple[int, List[str], float]]:
+        """Calibrated inference over preprocessed texts: top-k scoring on the
+        clamped matrix, gate + replacement walk, then one segmentation pass
+        under each text's final language. Returns (lang_idx, tokens, score)
+        like best_of_cached_weight_sets_batch; the score is the segmentation
+        pass's score for the final language (same definition as the base path).
+        """
+        cal = self.calibration
+        topk_lists = self.model.top_k_of_cached_weight_sets_batch(
+            preprocessed, cal.topk)
+
+        n = len(topk_lists)
+        # Materialize as the reference chain does: ids int64, scores float32,
+        # unfilled slots id -1 / score -inf (analysis gate_topk arrays).
+        ids = np.full((n, cal.topk), -1, dtype=np.int64)
+        scores = np.full((n, cal.topk), -np.inf, dtype=np.float32)
+        for r, cands in enumerate(topk_lists):
+            if not cands:
+                raise UnilidCalibrationError(
+                    "top-k scoring returned no candidates for a non-empty "
+                    "preprocessed text; cannot re-examine")
+            for j, (li, s) in enumerate(cands):
+                ids[r, j] = li
+                scores[r, j] = np.float32(s)
+
+        final, stats = re_examine(ids, scores, self._runtime)
+        self.last_reexamination_stats = stats
+
+        final_list = [int(x) for x in final]
+        seg = self.model.tokens_of_cached_weight_set_batch(
+            preprocessed, final_list)
+        return [(final_list[r], tokens, score)
+                for r, (tokens, score) in enumerate(seg)]
+
+    def _require_base_mode(self, method: str):
+        if self.calibrated:
+            raise UnilidCalibrationError(
+                f"{method} is only defined for the base model (it would "
+                f"otherwise run on the matrix with the unseen-token constant "
+                f"applied but without the re-examination, which is neither "
+                f"base nor calibrated inference); load with calibrated=False "
+                f"to use it")
+
+    def predict_normalized(self, text: str, alpha: float = 1.0) -> Tuple[str, List[str], float]:
+        """Predict language using length-normalized scores (score / n_tokens^alpha)."""
+        self._require_base_mode("predict_normalized")
+        pt = self.preprocess(text)
+        if not pt:
+            return None, [], float("-inf")
+        idx, tokens, score = self.model.best_of_cached_weight_sets_normalized(pt, alpha)
+        return self.langs[idx], tokens, score
+
+    def predict_normalized_batch(self, texts: List[str], alpha: float = 1.0) -> List[Tuple[str, List[str], float]]:
+        """Predict languages using length-normalized scores (Rayon parallel)."""
+        self._require_base_mode("predict_normalized_batch")
+        preprocessed, valid_idx = [], []
+        for i, text in enumerate(texts):
+            pt = self.preprocess(text)
+            if pt:
+                preprocessed.append(pt)
+                valid_idx.append(i)
+
+        if not preprocessed:
+            return [(None, [], float("-inf"))] * len(texts)
+
+        batch_results = self.model.best_of_cached_weight_sets_normalized_batch(preprocessed, alpha)
 
         results = [(None, [], float("-inf"))] * len(texts)
         for j, (idx, tokens, score) in enumerate(batch_results):
@@ -408,11 +668,34 @@ class UnilidModel:
         return len(self.langs)
 
 
-if __name__ == "__main__":
+def main(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(description="Convert model to .unilid format")
-    parser.add_argument("model_dir", type=Path, help="Model directory")
+    parser = argparse.ArgumentParser(
+        description="Convert between tokenizers directories and .unilid files")
+    parser.add_argument("input", type=Path,
+                        help="Model directory (pack) or .unilid file (--unpack)")
     parser.add_argument("-o", "--output", type=Path, default=None)
-    args = parser.parse_args()
-    output = args.output or (args.model_dir / "model.unilid")
-    save_unilid(args.model_dir, output)
+    parser.add_argument("--unpack", action="store_true",
+                        help="Unpack a .unilid file back to a tokenizers "
+                             "directory (writes calibration.json for a "
+                             "version-2 file)")
+    parser.add_argument("--calibration", type=Path, default=None,
+                        help="Calibration JSON to bundle when packing (writes "
+                             "a version-2 container)")
+    args = parser.parse_args(argv)
+    if args.unpack:
+        if args.calibration:
+            parser.error("--calibration only applies when packing")
+        if args.input.suffix != ".unilid":
+            parser.error(f"--unpack expects a .unilid file, got {args.input}")
+        output = args.output or args.input.with_suffix("")
+        unpack_unilid(args.input, output)
+    else:
+        output = args.output or (args.input / "model.unilid")
+        cal = (Calibration.from_json_file(args.calibration)
+               if args.calibration else None)
+        save_unilid(args.input, output, calibration=cal)
+
+
+if __name__ == "__main__":
+    main()

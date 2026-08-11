@@ -30,9 +30,17 @@ def _get_vocab_with_scores(tok: Tokenizer):
     return attributes["vocab"]
 
 
-def load_model_from_unilid(model_path: Path):
-    """Load from .unilid file."""
-    from unilid.model_io import load_unilid
+def load_model_from_unilid(model_path: Path, base: bool = False):
+    """Load from .unilid file (base weights, uncalibrated scoring)."""
+    from unilid.model_io import load_unilid, read_calibration
+
+    if not base and read_calibration(model_path) is not None:
+        raise SystemExit(
+            f"{model_path} bundles a calibration (version-2 container), but "
+            f"eval.py scores with base (uncalibrated) inference only. Pass "
+            f"--base to explicitly evaluate the base model, or use "
+            f"unilid.UnilidModel(path).predict_batch(...) for calibrated "
+            f"predictions.")
 
     base_tok, weights, langs = load_unilid(model_path)
 
@@ -76,7 +84,8 @@ def load_model_from_dir(model_dir: Path):
 
     print(f"Found {len(lang_files)} language tokenizers, vocab size {V}", file=sys.stderr)
 
-    very_neg = np.float32(-1e30)
+    from unilid.constants import MISSING_TOKEN_FILL_LOG_PROB
+    very_neg = np.float32(MISSING_TOKEN_FILL_LOG_PROB)
     langs = []
     weights = np.full((len(lang_files), V), very_neg, dtype=np.float32)
 
@@ -111,12 +120,12 @@ def load_model_from_dir(model_dir: Path):
     return base_tok, pre_tok, normalizer, langs
 
 
-def load_model(model_path: Path):
+def load_model(model_path: Path, base: bool = False):
     """Load model from .unilid file or tokenizers directory."""
     model_path = Path(model_path)
 
     if model_path.suffix == ".unilid" or (model_path.is_file() and model_path.name.endswith(".unilid")):
-        return load_model_from_unilid(model_path)
+        return load_model_from_unilid(model_path, base=base)
     elif model_path.is_dir():
         return load_model_from_dir(model_path)
     else:
@@ -432,11 +441,15 @@ Examples:
     parser.add_argument("--single-core", action="store_true", help="Use single-core inference")
     parser.add_argument("--lang-only", action="store_true", help="Use language-only labels (ignore script)")
     parser.add_argument("--batch-size", type=int, default=10000, help="Batch size for parallel inference")
+    parser.add_argument("--base", action="store_true",
+                        help="Explicitly evaluate the base (uncalibrated) model "
+                             "from a calibrated (version-2) .unilid file; "
+                             "without this flag such a file is refused")
     args = parser.parse_args()
 
     # Load model
     print(f"Loading model from {args.model}...", file=sys.stderr)
-    base_tok, pre_tok, normalizer, langs = load_model(args.model)
+    base_tok, pre_tok, normalizer, langs = load_model(args.model, base=args.base)
     model = base_tok.model
     print(f"Loaded {len(langs)} languages", file=sys.stderr)
 

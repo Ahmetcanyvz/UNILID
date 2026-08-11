@@ -4,8 +4,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
-from transformers import AutoTokenizer
-
 from unilid import constants
 from unilid.metadata import _save_tokenizer_metadata, _create_base_metadata
 
@@ -31,6 +29,7 @@ def load_tokenizer_from_config(config):
 
     else:
         try:
+            from transformers import AutoTokenizer  # lazy: optional dep, only for non-standard tokenizers
             tokenizer = AutoTokenizer.from_pretrained(config['path'])
         except Exception as e:
             logger.info(f"Tried to load tokenizer via default method and could not {e}")
@@ -204,8 +203,12 @@ def train_language_specific_tokenizer(corpus_info, vocab_size=8000,
                                       base_tokenizer_path=None,
                                       tokenizer_path_format=None,
                                       load_base_if_exists=True,
-                                      load_tokenizers_if_exists=False):
-    from unilid.trainers.language_specific_trainer import LanguageSpecificUnigramLMTokenizer
+                                      load_tokenizers_if_exists=False,
+                                      use_sentencepiece=True):
+    from unilid.trainers.language_specific_trainer import (
+        DEFAULT_BASE_NAME,
+        LanguageSpecificUnigramLMTokenizer,
+    )
 
     tok = LanguageSpecificUnigramLMTokenizer(vocab_size=vocab_size, reestimation_em_mode=reestimation_em_mode, byte_level=byte_level)
     if not base_tokenizer_path:
@@ -213,14 +216,20 @@ def train_language_specific_tokenizer(corpus_info, vocab_size=8000,
 
     if not tokenizer_path_format:
         from unilid.trainers.language_specific_trainer import DEFAULT_LANGTOKENIZER_NAME
-        tokenizer_path_format = os.path.join(output_dir, DEFAULT_LANGTOKENIZER_NAME)
+        # The trainer formats this with lang_code only, so em_mode is filled in
+        # here (the raw template would raise KeyError('em_mode') downstream).
+        tokenizer_path_format = os.path.join(
+            output_dir,
+            DEFAULT_LANGTOKENIZER_NAME.format(em_mode=reestimation_em_mode,
+                                              lang_code="{lang_code}"))
 
     tokenizer_paths = tok.train(
         corpus_info,
         base_tokenizer_path=base_tokenizer_path,
         tokenizer_path_format=tokenizer_path_format,
         load_base_if_exists=load_base_if_exists,
-        load_tokenizers_if_exists=load_tokenizers_if_exists
+        load_tokenizers_if_exists=load_tokenizers_if_exists,
+        use_sentencepiece=use_sentencepiece
     )
     if not tokenizer_paths:
         logger.error("Failed to train or load language-specific tokenizer.")
