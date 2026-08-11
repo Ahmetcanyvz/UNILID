@@ -71,7 +71,9 @@ Results published for the base model are reproduced with `calibrated=False` (`ev
 
 ## Adding your own language
 
-A new language can be added to an existing calibrated model without retraining anything else. The workflow trains the new language's token distribution over the model's existing vocabulary, appends it to the model file, and calibrates it from its own data alone:
+A new language can be added to an existing calibrated model without retraining anything else. A complete runnable walkthrough on toy data ships with the repository: `bash examples/add_language/run_example.sh` builds a small calibrated model from scratch, adds a fourth language to it, and compares predictions before and after (see [examples/add_language/README.md](examples/add_language/README.md)).
+
+The workflow trains the new language's token distribution over the model's existing vocabulary, appends it to the model file, and calibrates it from its own data alone:
 
 ```bash
 unilid-add-language unilid-1940-calibrated.unilid xyz_Latn xyz_train.txt -o extended.unilid
@@ -585,7 +587,8 @@ UNILID/
   convert.py                       # Convert to .unilid format (CLI)
   sentencepiece/                   # Forked SentencePiece (git submodule)
   tokenizers/                      # Forked HF tokenizers with fast inference (git submodule)
-  tests/                           # Unit tests (pytest)
+  examples/add_language/           # Runnable add-language walkthrough on toy data
+  tests/                           # Unit + integration tests (pytest)
   unilid/
     __init__.py
     api.py                         # High-level convenience functions
