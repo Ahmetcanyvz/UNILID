@@ -269,6 +269,43 @@ class Calibration:
         path.write_bytes(self.to_json_bytes())
         return path
 
+    # ----------------------------------------------------------- subsetting
+
+    def subset_for(self, languages: Sequence[str]) -> "Calibration":
+        """The calibration restricted to ``languages``: group tables and
+        training counts filtered, constants unchanged.
+
+        Thresholds are CARRIED OVER, not re-estimated: each threshold is a
+        percentile of margins measured against the full model's candidate set,
+        and a smaller candidate set can only raise a line's margin (the
+        runner-up score drops or stays when languages are removed), so under
+        carried thresholds re-examination fires at most as often as
+        calibrated. Re-estimation against the subset model removes that
+        one-sided difference (``unilid-calibrate subset --recalibrate``).
+        """
+        keep = set(languages)
+        missing = sorted(keep - set(self.train_counts))
+        if missing:
+            raise UnilidCalibrationError(
+                f"{len(missing)} requested language(s) missing from "
+                f"train_counts, first: {missing[:5]}")
+        from dataclasses import replace as _replace
+        provenance = dict(self.provenance)
+        provenance["subset"] = {
+            "n_languages": len(keep),
+            "thresholds": ("carried from the full model, not re-estimated; "
+                           "margins against a smaller candidate set are at "
+                           "least as large, so re-examination fires at most "
+                           "as often as calibrated"),
+        }
+        return _replace(
+            self,
+            group_a={l: r for l, r in self.group_a.items() if l in keep},
+            group_b={l: r for l, r in self.group_b.items() if l in keep},
+            train_counts={l: c for l, c in self.train_counts.items()
+                          if l in keep},
+            provenance=provenance)
+
     # ------------------------------------------------------- model consistency
 
     def runtime_for(self, langs: Sequence[str]) -> "CalibrationRuntime":

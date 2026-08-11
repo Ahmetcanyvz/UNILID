@@ -233,6 +233,32 @@ def load_unilid_raw(model_path: Path) -> Tuple[bytes, np.ndarray, List[str]]:
     return base_tok_bytes, weights, langs
 
 
+def subset_rows(weights: np.ndarray, langs: List[str],
+                languages: List[str]) -> Tuple[np.ndarray, List[str]]:
+    """Select the weight rows for ``languages``, preserving the MODEL's row
+    order (not the argument's). Returns (subset_weights, subset_langs); the
+    subset array is materialized (reading only the selected rows when
+    ``weights`` is a memmap). Unknown, duplicate, or empty selections are
+    errors."""
+    if not languages:
+        raise ValueError("languages must be a non-empty list")
+    seen = set()
+    for lang in languages:
+        if lang in seen:
+            raise ValueError(f"duplicate language in subset: {lang!r}")
+        seen.add(lang)
+    lang_set = set(langs)
+    unknown = [l for l in languages if l not in lang_set]
+    if unknown:
+        raise ValueError(
+            f"{len(unknown)} requested language(s) not in the model, "
+            f"first: {unknown[:5]}")
+    keep_idx = [i for i, l in enumerate(langs) if l in seen]
+    sub_langs = [langs[i] for i in keep_idx]
+    sub_weights = np.asarray(weights)[keep_idx]
+    return sub_weights, sub_langs
+
+
 def read_calibration(model_path: Path) -> Optional[Calibration]:
     """Read the bundled calibration from a .unilid file.
 
@@ -348,7 +374,7 @@ class UnilidModel:
     """
 
     def __init__(self, model_path, calibrated: bool = True,
-                 calibration=None):
+                 calibration=None, languages: Optional[List[str]] = None):
         """
         Load model from .unilid file or tokenizers directory.
 
@@ -360,6 +386,13 @@ class UnilidModel:
                 neither is present.
             calibration: Path to a standalone calibration JSON. Only valid when
                 the model file does not already bundle one.
+            languages: Restrict the model to this subset of its languages
+                (scoring cost is linear in the number of languages). Row order
+                follows the model, not this list. Under calibrated inference
+                the thresholds are carried over from the full model, which
+                makes re-examination fire at most as often as calibrated (a
+                smaller candidate set can only raise a line's margin); use
+                `unilid-calibrate subset --recalibrate` to re-estimate them.
         """
         model_path = Path(model_path)
         self.calibrated = False
@@ -384,13 +417,30 @@ class UnilidModel:
                 Calibration.from_json_file(calibration)
                 if calibration is not None else None)
             self._load_from_unilid(model_path, calibrated=calibrated,
-                                   cal=cal, source=str(model_path))
+                                   cal=cal, source=str(model_path),
+                                   languages=languages)
         elif model_path.is_dir():
             cal = (Calibration.from_json_file(calibration)
                    if calibration is not None else None)
-            self._load_from_dir(model_path, calibrated=calibrated, cal=cal)
+            self._load_from_dir(model_path, calibrated=calibrated, cal=cal,
+                                languages=languages)
         else:
             raise ValueError(f"Unknown model format: {model_path}. Expected .unilid file or directory.")
+
+    def _subset_and_report(self, weights, langs, languages, cal,
+                           calibrated: bool):
+        """Apply the language subset and, when calibrated, filter the
+        calibration and state the carried-thresholds consequence."""
+        weights, langs = subset_rows(weights, langs, languages)
+        print(f"Restricted to {len(langs)} of the model's languages")
+        if calibrated and cal is not None:
+            cal = cal.subset_for(langs)
+            print("Re-examination thresholds are carried from the full model "
+                  "(margins against a smaller candidate set are at least as "
+                  "large, so re-examination fires at most as often as "
+                  "calibrated); unilid-calibrate subset --recalibrate "
+                  "re-estimates them")
+        return weights, langs, cal
 
     def _require_scorer_methods(self):
         """The pinned tokenizers fork provides the numpy weight-loading path and
@@ -427,9 +477,12 @@ class UnilidModel:
         self.calibrated = True
 
     def _load_from_unilid(self, model_path: Path, calibrated: bool = True,
-                          cal=None, source: str = ""):
+                          cal=None, source: str = "", languages=None):
         """Load from .unilid file."""
         base_tok, weights, self.langs = load_unilid(model_path)
+        if languages is not None:
+            weights, self.langs, cal = self._subset_and_report(
+                weights, self.langs, languages, cal, calibrated)
 
         self.tokenizer = base_tok
         self.model = base_tok.model
@@ -456,7 +509,7 @@ class UnilidModel:
         return cls(model_dir)
 
     def _load_from_dir(self, model_dir: Path, calibrated: bool = True,
-                       cal=None):
+                       cal=None, languages=None):
         """Load from tokenizers directory (streaming)."""
         from tqdm import tqdm
 
@@ -514,6 +567,10 @@ class UnilidModel:
 
             # Clean up after each batch
             gc.collect()
+
+        if languages is not None:
+            weights, langs, cal = self._subset_and_report(
+                weights, langs, languages, cal, calibrated)
 
         self.tokenizer = base_tok
         self.model = base_tok.model

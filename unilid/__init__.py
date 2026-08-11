@@ -43,7 +43,8 @@ def __dir__():
     return sorted(set(globals()) | set(_LAZY_ATTRS))
 
 
-def load_model(path, calibrated: bool = True, calibration=None):
+def load_model(path, calibrated: bool = True, calibration=None,
+               languages=None):
     """
     Load a UNILID model for language identification.
 
@@ -54,6 +55,10 @@ def load_model(path, calibrated: bool = True, calibration=None):
             ``calibration``); raises UnilidCalibrationError otherwise. Pass
             ``calibrated=False`` for the base model's behavior.
         calibration: Path to a standalone calibration JSON.
+        languages: Restrict the model to this subset of its languages
+            (scoring cost is linear in the number of languages). Under
+            calibrated inference the re-examination thresholds are carried
+            over from the full model; see the README's subsetting section.
 
     Returns:
         UnilidModel instance ready for prediction
@@ -64,7 +69,8 @@ def load_model(path, calibrated: bool = True, calibration=None):
         >>> lang, tokens, score = model.predict("Hello world")
         >>> print(lang)  # 'eng'
     """
-    return UnilidModel(path, calibrated=calibrated, calibration=calibration)
+    return UnilidModel(path, calibrated=calibrated, calibration=calibration,
+                       languages=languages)
 
 
 __all__ = [
