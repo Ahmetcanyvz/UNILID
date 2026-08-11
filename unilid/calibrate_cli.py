@@ -19,6 +19,7 @@ from .model_io import (
     UnilidModel,
     load_unilid_raw,
     read_calibration,
+    subset_rows,
     write_unilid,
 )
 
@@ -94,6 +95,76 @@ def cmd_estimate(args):
     print(f"Wrote {out}")
 
 
+def cmd_subset(args):
+    model_path = Path(args.model)
+    out = Path(args.output).with_suffix(".unilid")
+    if out.resolve() == model_path.resolve():
+        raise ValueError("output must differ from the input model file")
+
+    if args.langs:
+        languages = [l.strip() for l in args.langs.split(",") if l.strip()]
+    else:
+        languages = [l.strip() for l in
+                     Path(args.langs_file).read_text().splitlines()
+                     if l.strip()]
+
+    base_tok_bytes, weights, langs = load_unilid_raw(model_path)
+    cal = read_calibration(model_path)
+    sub_weights, sub_langs = subset_rows(weights, langs, languages)
+    print(f"Keeping {len(sub_langs)} of {len(langs)} languages")
+
+    if cal is None:
+        if args.recalibrate:
+            raise UnilidCalibrationError(
+                f"{model_path} is a version-1 file with no calibration; there "
+                f"are no thresholds to re-estimate (bundle a calibration "
+                f"first)")
+        write_unilid(out, base_tok_bytes, sub_langs, sub_weights, None)
+        print(f"Wrote {out} (version 1, no calibration)")
+        return
+
+    sub_cal = cal.subset_for(sub_langs)
+    if args.recalibrate:
+        corpus_dir = Path(args.recalibrate)
+        group_a_langs = sorted(sub_cal.group_a)
+        print(f"Re-estimating {len(group_a_langs)} group A threshold(s) "
+              f"against the subset model...")
+        model = UnilidModel(model_path, calibrated=True, languages=sub_langs)
+        rows = {}
+        for lang in group_a_langs:
+            train_file = corpus_dir / f"{lang}_train.txt"
+            if not train_file.is_file():
+                raise FileNotFoundError(
+                    f"training file for {lang!r} not found: {train_file} "
+                    f"(--recalibrate expects <corpus_dir>/<lang>_train.txt)")
+            with open(train_file, encoding="utf-8") as f:
+                lines = [l.rstrip("\n") for l in f if l.rstrip("\n")]
+            rows[lang] = estimate_tau(model, lang, lines,
+                                      sub_cal.train_counts[lang])
+            print(f"  {lang}: tau={rows[lang].tau} "
+                  f"excluded={rows[lang].excluded} cause={rows[lang].cause!r}")
+        del model
+        gc.collect()
+        provenance = dict(sub_cal.provenance)
+        provenance["subset"] = {
+            "n_languages": len(sub_langs),
+            "thresholds": "re-estimated against the subset model "
+                          "(--recalibrate)",
+        }
+        sub_cal = dataclass_replace(sub_cal, group_a=rows,
+                                    provenance=provenance)
+    sub_cal.runtime_for(sub_langs)
+    write_unilid(out, base_tok_bytes, sub_langs, sub_weights, sub_cal)
+    which = "re-estimated" if args.recalibrate else "carried over"
+    print(f"Wrote {out} (version 2, {len(sub_langs)} languages, "
+          f"thresholds {which})")
+    if not args.recalibrate:
+        print("Carried thresholds make re-examination fire at most as often "
+              "as calibrated (margins against a smaller candidate set are at "
+              "least as large); pass --recalibrate <corpus_dir> to "
+              "re-estimate them")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Calibration artifact utilities for .unilid models")
@@ -121,6 +192,26 @@ def main(argv=None):
     p.add_argument("train_file", type=Path)
     p.add_argument("-o", "--output", type=Path, required=True)
     p.set_defaults(func=cmd_estimate)
+
+    p = sub.add_parser("subset", help="Write a model restricted to a subset "
+                                      "of its languages (scoring cost is "
+                                      "linear in the number of languages)")
+    p.add_argument("model", type=Path)
+    p.add_argument("-o", "--output", type=Path, required=True)
+    langs_group = p.add_mutually_exclusive_group(required=True)
+    langs_group.add_argument("--langs",
+                             help="Comma-separated language codes to keep")
+    langs_group.add_argument("--langs-file", type=Path,
+                             help="File with one language code per line")
+    p.add_argument("--recalibrate", type=Path, default=None,
+                   metavar="CORPUS_DIR",
+                   help="Optionally re-estimate each retained group A "
+                        "language's threshold from "
+                        "CORPUS_DIR/<lang>_train.txt against the subset "
+                        "model; without this, thresholds are carried over "
+                        "from the full model (re-examination then fires at "
+                        "most as often as calibrated)")
+    p.set_defaults(func=cmd_subset)
 
     args = parser.parse_args(argv)
     args.func(args)
