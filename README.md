@@ -4,6 +4,18 @@ Fast multilingual language identification using unigram language models. Trains 
 
 ## Quick Start
 
+Installation first (section below), then download the released model:
+
+```bash
+pip install huggingface_hub
+python -c "from huggingface_hub import hf_hub_download; \
+  print(hf_hub_download('cmeister/unilid-1940', 'unilid-1940-calibrated.unilid', local_dir='.'))"
+# or directly:
+# wget https://huggingface.co/cmeister/unilid-1940/resolve/main/unilid-1940-calibrated.unilid
+```
+
+The file is 780 MB; loading builds the float32 weight matrix in memory, so plan for roughly 2 to 3 GB of free RAM.
+
 ```python
 from unilid import load_model
 
@@ -104,19 +116,32 @@ Three caveats, stated in full in the paper:
 
 ## Installation
 
+Prerequisites:
+
+- Python 3.9 or newer
+- A Rust toolchain (`cargo`; install via [rustup](https://rustup.rs)) for the mandatory tokenizers build
+- cmake and a C++ compiler, only if you build the optional SentencePiece CLI (needed for the `sp` training method)
+
 ```bash
-# Clone with submodules (required for custom tokenizers)
-git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
+# Clone with submodules (required for custom tokenizers).
+# Until https://github.com/Ahmetcanyvz/UNILID/pull/1 is merged, the calibrated
+# release described by this README lives on the calibration-release branch of
+# the cimeister fork:
+git clone --recurse-submodules -b calibration-release https://github.com/cimeister/UNILID.git && cd UNILID
+# after the merge: git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
 
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install unilid
+# Install unilid (prediction needs only this plus the tokenizers build below)
 pip install -e .
 
-# For training capabilities:
+# For training capabilities (train.py, the trainer APIs; torch/transformers/ujson):
 pip install -e ".[train]"
+
+# For running the test suite:
+pip install -e ".[dev]"
 
 # Build custom tokenizers (REQUIRED for inference)
 pip uninstall tokenizers -y
@@ -165,11 +190,15 @@ Verify: `spm_train --help` should print usage info.
 ### Verify Installation
 
 ```python
-from tokenizers import Tokenizer
-t = Tokenizer.from_file("path/to/tokenizer.json")
-assert hasattr(t.model, "set_weight_sets"), "Custom tokenizers not installed!"
-assert hasattr(t.model, "tokens_of_cached_weight_set_batch"), "Rebuild the tokenizers submodule (calibrated inference needs it)"
+from tokenizers.models import Unigram
+for method in ("set_weight_sets", "set_weight_sets_numpy",
+               "top_k_of_cached_weight_sets_batch",
+               "tokens_of_cached_weight_set_batch"):
+    assert hasattr(Unigram, method), f"custom tokenizers build missing {method}; rebuild the submodule"
+print("tokenizers extension OK")
 ```
+
+These are the methods model loading itself checks for; an older build fails at load time with the same rebuild instruction. To run the test suite: `pip install -e ".[dev]" && python -m pytest tests/`.
 
 The custom tokenizers provides:
 - `set_weight_sets()` - Cache per-language weights in Rust
@@ -366,12 +395,15 @@ python convert.py results_100k -o my_model.unilid
 unilid-convert results_100k -o my_model.unilid --calibration calibration.json  # bundle a calibration
 ```
 
-Unpack `.unilid` back to tokenizers directory:
+Unpack `.unilid` back to tokenizers directory (writes `calibration.json` for a version-2 file):
 
 ```bash
 python convert.py model.unilid --unpack
 python convert.py model.unilid --unpack -o tokenizers_dir/
+unilid-convert model.unilid --unpack
 ```
+
+`unilid-convert` and `python convert.py` accept the same pack/unpack arguments; `--calibration` is available on `unilid-convert`.
 
 Or via Python:
 

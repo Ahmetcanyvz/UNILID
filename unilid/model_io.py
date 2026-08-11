@@ -670,17 +670,31 @@ class UnilidModel:
 
 def main(argv=None):
     import argparse
-    parser = argparse.ArgumentParser(description="Convert model to .unilid format")
-    parser.add_argument("model_dir", type=Path, help="Model directory")
+    parser = argparse.ArgumentParser(
+        description="Convert between tokenizers directories and .unilid files")
+    parser.add_argument("input", type=Path,
+                        help="Model directory (pack) or .unilid file (--unpack)")
     parser.add_argument("-o", "--output", type=Path, default=None)
+    parser.add_argument("--unpack", action="store_true",
+                        help="Unpack a .unilid file back to a tokenizers "
+                             "directory (writes calibration.json for a "
+                             "version-2 file)")
     parser.add_argument("--calibration", type=Path, default=None,
-                        help="Calibration JSON to bundle (writes a version-2 "
-                             "container)")
+                        help="Calibration JSON to bundle when packing (writes "
+                             "a version-2 container)")
     args = parser.parse_args(argv)
-    output = args.output or (args.model_dir / "model.unilid")
-    cal = (Calibration.from_json_file(args.calibration)
-           if args.calibration else None)
-    save_unilid(args.model_dir, output, calibration=cal)
+    if args.unpack:
+        if args.calibration:
+            parser.error("--calibration only applies when packing")
+        if args.input.suffix != ".unilid":
+            parser.error(f"--unpack expects a .unilid file, got {args.input}")
+        output = args.output or args.input.with_suffix("")
+        unpack_unilid(args.input, output)
+    else:
+        output = args.output or (args.input / "model.unilid")
+        cal = (Calibration.from_json_file(args.calibration)
+               if args.calibration else None)
+        save_unilid(args.input, output, calibration=cal)
 
 
 if __name__ == "__main__":
