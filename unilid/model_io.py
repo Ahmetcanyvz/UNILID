@@ -544,18 +544,30 @@ class UnilidModel:
             return "".join(piece[0] for piece in pre)
         return text if text else None
 
-    def predict(self, text: str) -> Tuple[str, List[str], float]:
-        """Predict language for a single text."""
+    def predict(self, text: str, forward: bool = False) -> Tuple[str, List[str], float]:
+        """Predict language for a single text. ``forward=True`` scores by
+        marginalizing over all segmentations (base mode only: the calibration
+        thresholds are defined on Viterbi margins)."""
         if self.calibrated:
+            if forward:
+                self._require_base_mode("predict(forward=True)")
             return self.predict_batch([text])[0]
         pt = self.preprocess(text)
         if not pt:
             return None, [], float("-inf")
-        idx, tokens, score = self.model.best_of_cached_weight_sets(pt)
+        if forward:
+            idx, tokens, score = self.model.best_of_cached_weight_sets_forward(pt)
+        else:
+            idx, tokens, score = self.model.best_of_cached_weight_sets(pt)
         return self.langs[idx], tokens, score
 
-    def predict_batch(self, texts: List[str]) -> List[Tuple[str, List[str], float]]:
-        """Predict languages for multiple texts (Rayon parallel)."""
+    def predict_batch(self, texts: List[str], forward: bool = False) -> List[Tuple[str, List[str], float]]:
+        """Predict languages for multiple texts (Rayon parallel).
+        ``forward=True`` scores by marginalizing over all segmentations (base
+        mode only: the calibration thresholds are defined on Viterbi margins).
+        """
+        if forward and self.calibrated:
+            self._require_base_mode("predict_batch(forward=True)")
         preprocessed, valid_idx = [], []
         for i, text in enumerate(texts):
             pt = self.preprocess(text)
@@ -568,6 +580,8 @@ class UnilidModel:
 
         if self.calibrated:
             batch_results = self._predict_batch_calibrated(preprocessed)
+        elif forward:
+            batch_results = self.model.best_of_cached_weight_sets_forward_batch(preprocessed)
         else:
             batch_results = self.model.best_of_cached_weight_sets_batch(preprocessed)
 

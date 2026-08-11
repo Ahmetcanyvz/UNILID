@@ -25,6 +25,21 @@ for text, (lang, tokens, score) in zip(texts, results):
 base_model = load_model("unilid-1940-calibrated.unilid", calibrated=False)
 ```
 
+### Decoding: Viterbi vs. Forward Marginalization
+
+By default, `predict` / `predict_batch` use **Viterbi** decoding, scoring each language by its single most likely segmentation. In base (uncalibrated) mode you can switch to **exact marginalization** via the forward algorithm, which sums probabilities over all valid segmentations:
+
+```python
+# Viterbi (default; fastest, recommended)
+lang, tokens, score = base_model.predict(text)
+
+# Forward marginalization (exact log p(s | l), ~2x slower; base mode only)
+lang, tokens, score = base_model.predict(text, forward=True)
+results = base_model.predict_batch(texts, forward=True)
+```
+
+The two modes give nearly identical accuracy in practice; Viterbi is recommended unless you need exact marginal likelihoods. `forward=True` is defined for the base model only and raises under calibrated inference: the calibration thresholds are percentiles of Viterbi margins, so marginalized scores would not match them.
+
 ## Pre-trained Models
 
 | Model | Languages | Training Data | Calibration | Download |

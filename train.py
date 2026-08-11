@@ -64,6 +64,13 @@ def _convert_to_unigram_base(source_path, output_path):
     special_set = set(SPECIAL_TOKENS.values())
     unk_token = SPECIAL_TOKENS["unk_token"]
 
+    # Ensure all UNILID special tokens exist in the vocab
+    next_id = max(vocab.values()) + 1 if vocab else 0
+    for sp_token in SPECIAL_TOKENS.values():
+        if sp_token not in vocab:
+            vocab[sp_token] = next_id
+            next_id += 1
+
     # Uniform log probs for all non-special tokens
     non_special = [t for t in vocab if t not in special_set]
     uniform_lp = np.log(1.0 / len(non_special)) if non_special else MIN_TOKEN_LOG_PROB
@@ -75,7 +82,7 @@ def _convert_to_unigram_base(source_path, output_path):
         else:
             tuples.append((token, uniform_lp))
 
-    unk_id = vocab.get(unk_token, 0)
+    unk_id = vocab[unk_token]
 
     tok = _build_unigramlm_hf_tokenizer_from_lprobs(
         tuples, unk_id,
