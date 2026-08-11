@@ -1,15 +1,15 @@
 # UNILID
 
-Fast multilingual language identification using unigram language models. Trains a shared vocabulary across languages, then re-estimates per-language token probabilities via EM (using either SentencePiece's C implementation or a custom Python implementation). Supports byte-level tokenization, vocabulary seeding from external tokenizers, and Rayon-parallel batch inference.
+Fast multilingual language identification using unigram language models. Trains a shared vocabulary across languages, then re-estimates per-language token probabilities via EM (using either SentencePiece's C implementation or a custom Python implementation). Supports byte-level tokenization, vocabulary seeding from external tokenizers, Rayon-parallel batch inference, and calibrated inference (the default), whose per-language decision thresholds can be extended one language at a time.
 
 ## Quick Start
 
 ```python
 from unilid import load_model
 
-model = load_model("model.unilid")
+model = load_model("unilid-1940-calibrated.unilid")   # calibrated inference (default)
 lang, tokens, score = model.predict("The quick brown fox jumps over the lazy dog.")
-print(lang)  # 'eng'
+print(lang)  # 'eng_Latn'
 
 # Batch prediction (parallel)
 texts = [
@@ -20,13 +20,70 @@ texts = [
 results = model.predict_batch(texts)
 for text, (lang, tokens, score) in zip(texts, results):
     print(f"{lang}: {text[:50]}...")
+
+# Base (uncalibrated) behavior of the original release:
+base_model = load_model("unilid-1940-calibrated.unilid", calibrated=False)
 ```
 
 ## Pre-trained Models
 
-| Model | Languages | Training Data | Download |
-|-------|-----------|---------------|----------|
-| unilid-1940 | 1940 language-script combinations | 60M samples | [Download](https://polybox.ethz.ch/index.php/s/Kbb9TWkSSgQ8yoS) |
+| Model | Languages | Training Data | Calibration | Download |
+|-------|-----------|---------------|-------------|----------|
+| unilid-1940-calibrated | 1940 language-script combinations | 60M samples | bundled (version-2 file) | [HuggingFace Hub](https://huggingface.co/cmeister/unilid-1940) |
+| unilid-1940 | 1940 language-script combinations | 60M samples | none (version-1 file) | [polybox](https://polybox.ethz.ch/index.php/s/Kbb9TWkSSgQ8yoS) |
+
+Both files contain the same trained model. The calibrated file additionally bundles the calibration artifact (per-language thresholds, training-line counts, and the constants; 160 KB).
+
+## Calibrated inference
+
+UNILID scores a text under every language and predicts the language with the highest score. Calibrated UNILID keeps this decision rule and adds two corrections, derived in the UNILID paper from an error analysis of the base model. This section explains what runs at prediction time; the paper documents how each constant was chosen and on which data.
+
+**1. A shared constant for unseen tokens.** Each language's model assigns a log-probability to every token in the shared vocabulary, including tokens that never appeared in that language's training data. Training never leaves a token at probability zero: every token receives at least a minimum probability of 10^-12, and each language's probabilities are then normalized to sum to one. A side effect of that normalization is that the probability an unseen token ends up with differs from language to language, depending on how much training data the language has. Prediction compares scores across languages, so these differing unseen-token values act as a per-language offset added to every unseen token in the text: a text containing tokens unseen by two candidate languages is pushed toward the candidate whose unseen-token value happens to be higher, for no linguistic reason. The correction removes the offset. At load time, every unseen-token log-probability that lies above the shared constant c = -21 (in natural log units) is lowered to exactly c. Values already at or below c stay as trained, and the distributions are not renormalized afterwards.
+
+**2. Re-examining close decisions that land in two groups of languages.** The margin of a prediction is the best language's score minus the second-best language's score; a small margin means the decision was close. The base model's errors concentrate in predictions INTO two groups: languages with fewer than 18,000 training samples, whose estimated distributions stay close to their uniform initialization and therefore give moderate probability to text from many languages, and a group of four larger languages whose distributions are unusually flat for their script (Scots, Banjar, Aragonese, West Flemish; the identification criteria are in the paper). When the predicted language belongs to either group and the margin falls below that language's own threshold, the prediction is re-examined: it moves to the highest-ranked of the candidates ranked 2 to 5 that has at least 100,000 training samples and a score within 21 natural-log units of the best score. If no candidate qualifies, the prediction stays unchanged. Each threshold is a percentile of the margins that language's own training lines produce, so a threshold can be computed for a new language without touching any other language. 26 of the 1,080 languages in the first group had fewer than 200 usable calibration lines; they receive no threshold and are never re-examined.
+
+**Measured effect.** On the GlotLID-C test pool (45.4M lines, 1,940 languages), macro F1 rises from 0.929 (base) to 0.957 (calibrated). On UDHR, parallel data where every language has a similar number of test samples, macro F1 moves from 0.859 to 0.838: re-examination also moves some correct low-margin predictions, which lowers macro F1 on data where every language has similar sample counts. On CommonLID, an out-of-domain evaluation on web-crawled text with 109 labels, macrolanguage-aware accuracy (a prediction counts as correct when it matches the label at the language or macrolanguage level) rises from 0.845 to 0.860, while tag-level macro F1 moves from 0.723 to 0.715; calibration lowers the number of lines predicted as languages outside the 109-label set from 32,901 to 25,884, which raises accuracy, and re-examination moves some correct low-margin lines, which lowers tag-level macro F1. Together the three results locate where the gains appear: test data whose per-language line counts follow a collection's natural imbalance, over a label set that includes under-resourced languages. Use `calibrated=False` where the base behavior is wanted.
+
+### Migration note for existing users
+
+Version 0.2.0 makes calibrated inference the default. Loading a model without a calibration artifact (any version-1 `.unilid` file, including the original polybox release and self-trained models) with default arguments raises `UnilidCalibrationError`. Either download the calibrated model file, or pass `calibrated=False`:
+
+```python
+model = load_model("unilid-1940.unilid", calibrated=False)
+```
+
+Results published for the base model are reproduced with `calibrated=False` (`eval.py` refuses a calibrated model file unless `--base` is passed, so the two modes cannot be mixed up silently).
+
+## Adding your own language
+
+A new language can be added to an existing calibrated model without retraining anything else. The workflow trains the new language's token distribution over the model's existing vocabulary, appends it to the model file, and calibrates it from its own data alone:
+
+```bash
+unilid-add-language unilid-1940-calibrated.unilid xyz_Latn xyz_train.txt -o extended.unilid
+```
+
+or in Python:
+
+```python
+from unilid import add_language
+
+summary = add_language("unilid-1940-calibrated.unilid", "xyz_Latn",
+                       "xyz_train.txt", "extended.unilid")
+```
+
+What this does:
+
+1. Trains the new language's distribution over the existing shared vocabulary (fixed-vocabulary EM, 20 rounds, minimum token probability 10^-12). The default method (`sp`) needs the forked SentencePiece binary (see Installation); `--method em` is a pure-Python alternative that has not been verified against the release's end-to-end chain.
+2. Appends the new weight row at the last index. Existing rows are copied byte-identically.
+3. Applies the calibration recipe to the new language only: its unseen-token values are subject to the shared constant c like every other language's; if it has fewer than 18,000 training lines, its re-examination threshold is estimated from its own training lines by the same recipe as the released thresholds (languages with fewer than 200 usable lines are excluded and never re-examined); with 18,000 or more lines it receives no threshold. It becomes a replacement candidate if and only if it has at least 100,000 training lines.
+
+Three caveats, stated in full in the paper:
+
+- The four-language high-entropy group is not recomputed. Its identification needs entropy statistics across all languages and a validation scoring pass, so it is the one non-incremental part of the calibration. The shipped group stays as released.
+- Existing languages' thresholds are kept. A new language changes the margin distributions they were estimated on; re-deriving all thresholds requires the released calibration pipeline, not the incremental command.
+- The 100,000-line requirement on replacement candidates coincides with the per-language training-data cap of the released model's corpus. For a corpus without that cap, the requirement is still "at least 100,000 training lines" (the `replacement_min_n` constant in the calibration artifact), and whether that value fits an uncapped deployment is a decision to make and document.
+
+`unilid-calibrate` manages the calibration artifact directly: `export` writes the bundled artifact to JSON, `bundle` attaches a calibration JSON to a version-1 model file, and `estimate` re-estimates one language's threshold from its training file.
 
 ## Installation
 
@@ -62,7 +119,7 @@ git submodule update --init --recursive
 
 ### SentencePiece Setup
 
-The default language-specific training method (`--per-lang-counts-method sp`) requires a [forked SentencePiece](https://github.com/cimeister/sentencepiece.git) CLI binary. The fork (branch `fixed-vocab-em`) adds fixed-vocabulary EM re-estimation support.
+The default language-specific training method (`--per-lang-counts-method sp`, also used by `unilid-add-language`) requires a [forked SentencePiece](https://github.com/cimeister/sentencepiece.git) CLI binary. The fork (branch `fixed-vocab-em`) adds fixed-vocabulary EM re-estimation support.
 
 You need **both** the Python package (installed above via pip) and the compiled CLI:
 
@@ -94,12 +151,15 @@ Verify: `spm_train --help` should print usage info.
 from tokenizers import Tokenizer
 t = Tokenizer.from_file("path/to/tokenizer.json")
 assert hasattr(t.model, "set_weight_sets"), "Custom tokenizers not installed!"
+assert hasattr(t.model, "tokens_of_cached_weight_set_batch"), "Rebuild the tokenizers submodule (calibrated inference needs it)"
 ```
 
 The custom tokenizers provides:
 - `set_weight_sets()` - Cache per-language weights in Rust
 - `best_of_cached_weight_sets()` - Single text inference
 - `best_of_cached_weight_sets_batch()` - Rayon-parallel batch inference (~10x faster)
+- `top_k_of_cached_weight_sets_batch()` - Top-k languages with scores (used by calibrated inference)
+- `tokens_of_cached_weight_set_batch()` - Segmentation under a specified language (used by calibrated inference)
 
 ## Training
 
@@ -109,6 +169,8 @@ The custom tokenizers provides:
 3. Trains a shared base tokenizer (HuggingFace UnigramTrainer)
 4. Re-estimates per-language token probabilities (SentencePiece or EM)
 5. Saves all tokenizers and a `training_summary.json`
+
+A model trained this way is a base model with no calibration artifact; load it with `calibrated=False`. Deriving a full calibration for a new model (thresholds for every language below 18,000 training lines and the high-entropy group) is described in the paper's development-protocol appendix.
 
 ### Input Formats
 
@@ -253,7 +315,7 @@ For efficient storage and fast loading, trained models can be converted to a sin
 .unilid format (custom binary):
   Header (32 bytes):
     - magic: 8 bytes "UNILID\x00\x00"
-    - version: uint32
+    - version: uint32 (1 = base model; 2 = calibration section appended)
     - num_langs: uint32
     - vocab_size: uint32
     - base_tok_len: uint32
@@ -263,7 +325,12 @@ For efficient storage and fast loading, trained models can be converted to a sin
     - base_tokenizer JSON (base_tok_len bytes, utf-8)
     - langs JSON array (langs_len bytes, utf-8)
     - weights: float32[num_langs * vocab_size]
+  Version 2 only, after the weights:
+    - calibration_len: uint64 little-endian
+    - calibration JSON (calibration_len bytes, utf-8)
 ```
+
+The stored weights are always the base (unclamped) matrix; the unseen-token constant is applied at load time when calibrated inference is active, so one file serves both modes. Package version 0.1.0 rejects version-2 files with an error rather than silently returning base predictions. `unpack_unilid` writes the bundled calibration to `calibration.json` beside the tokenizers; `save_unilid` refuses to repack a directory containing `calibration.json` unless the calibration is passed explicitly, so a calibrated model cannot be downgraded to version 1 by accident.
 
 ### Benefits
 
@@ -279,6 +346,7 @@ Pack tokenizers directory to `.unilid`:
 ```bash
 python convert.py results_100k
 python convert.py results_100k -o my_model.unilid
+unilid-convert results_100k -o my_model.unilid --calibration calibration.json  # bundle a calibration
 ```
 
 Unpack `.unilid` back to tokenizers directory:
@@ -302,7 +370,7 @@ unpack_unilid("model.unilid", "tokenizers_dir/")
 
 ## Prediction & Evaluation
 
-The `eval.py` script supports two modes:
+The `eval.py` script scores with base (uncalibrated) inference. Given a version-2 (calibrated) model file it exits with an error unless `--base` is passed; calibrated predictions are produced through the Python API (`model.predict_batch(...)`). It supports two modes:
 
 ### Prediction Mode (default)
 
@@ -408,8 +476,9 @@ merged_path = train_tokmix(
 from unilid import load_model
 
 # Load from .unilid file or tokenizers directory
-model = load_model("model.unilid")
-# or: model = load_model("results_100k/")
+model = load_model("unilid-1940-calibrated.unilid")            # calibrated (default)
+model = load_model("model.unilid", calibrated=False)           # base behavior
+model = load_model("model.unilid", calibration="cal.json")     # standalone calibration file
 
 # Single text prediction
 lang, tokens, score = model.predict("Hello world")
@@ -424,6 +493,8 @@ for text, (lang, tokens, score) in zip(texts, results):
 # Access model info
 print(f"Languages: {model.num_languages}")
 print(f"Available: {model.langs[:5]}...")
+print(f"Calibrated: {model.calibrated}")            # True under the default
+print(model.last_reexamination_stats)               # per-group counts of the last batch
 
 # Access the base tokenizer for encoding/decoding
 tok = model.tokenizer
@@ -432,6 +503,8 @@ print(encoded.ids)      # token IDs
 print(encoded.tokens)   # token strings
 decoded = tok.decode(encoded.ids)
 ```
+
+`model.predict` and `model.predict_batch` return `(lang, tokens, score)` in both modes; under calibrated inference, `tokens` and `score` are the segmentation and score under the finally predicted language. `predict_normalized(_batch)` is defined for the base model only and raises under calibrated inference.
 
 #### Low-level API
 
@@ -493,14 +566,18 @@ python -m unilid.corpus_tokenizer --config config.json --output_dir ./output
 ```
 UNILID/
   train.py                         # Unified training script (CLI)
-  eval.py                          # Evaluation script (CLI)
+  eval.py                          # Evaluation script (CLI, base inference)
   convert.py                       # Convert to .unilid format (CLI)
   sentencepiece/                   # Forked SentencePiece (git submodule)
   tokenizers/                      # Forked HF tokenizers with fast inference (git submodule)
+  tests/                           # Unit tests (pytest)
   unilid/
     __init__.py
     api.py                         # High-level convenience functions
     model_io.py                    # .unilid format I/O, UnilidModel class
+    calibration.py                 # Calibration artifact, clamp, gate + walk, threshold estimation
+    add_language.py                # add_language() and unilid-add-language CLI
+    calibrate_cli.py               # unilid-calibrate CLI (export/bundle/estimate)
     constants.py                   # Special tokens, defaults
     token_encoding.py              # HF <-> SP token format conversion
     vocab_io.py                    # Vocabulary file I/O
