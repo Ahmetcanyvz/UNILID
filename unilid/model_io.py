@@ -392,6 +392,20 @@ class UnilidModel:
         else:
             raise ValueError(f"Unknown model format: {model_path}. Expected .unilid file or directory.")
 
+    def _require_scorer_methods(self):
+        """The pinned tokenizers fork provides the numpy weight-loading path and
+        the calibrated-inference scorers; an older build of the extension is a
+        setup error, reported with the fix rather than degraded silently."""
+        missing = [name for name in ("set_weight_sets_numpy",
+                                     "top_k_of_cached_weight_sets_batch",
+                                     "tokens_of_cached_weight_set_batch")
+                   if not hasattr(self.model, name)]
+        if missing:
+            raise RuntimeError(
+                f"the installed tokenizers extension is missing {missing}; "
+                f"rebuild the bundled fork (cd tokenizers/bindings/python && "
+                f"maturin develop --release) as described in the README")
+
     def _init_calibrated(self, weights: np.ndarray, cal, source: str):
         """Validate the calibration against this model, apply the unseen-token
         constant, and push the clamped matrix to the Rust cache."""
@@ -407,7 +421,7 @@ class UnilidModel:
             weights, cal.unseen_token_constant)
         print(f"Applied unseen-token constant {cal.unseen_token_constant} "
               f"({n_mod}/{len(self.langs)} languages modified)")
-        self.model.set_weight_sets(w_cal.tolist())
+        self.model.set_weight_sets_numpy(w_cal)
         del w_cal
         self.calibration = cal
         self.calibrated = True
@@ -424,10 +438,13 @@ class UnilidModel:
         self._lang_to_idx = {lang: i for i, lang in enumerate(self.langs)}
 
         print("Pushing weights to Rust cache...")
+        self._require_scorer_methods()
         if calibrated:
             self._init_calibrated(weights, cal, source or str(model_path))
         else:
-            self.model.set_weight_sets(np.array(weights).tolist())
+            # memmap passes straight through the buffer protocol: the rows are
+            # copied into the Rust cache without materializing a Python list.
+            self.model.set_weight_sets_numpy(weights)
 
         del weights
         gc.collect()
@@ -506,10 +523,11 @@ class UnilidModel:
         self._lang_to_idx = {lang: i for i, lang in enumerate(langs)}
 
         print("Pushing weights to Rust cache...")
+        self._require_scorer_methods()
         if calibrated:
             self._init_calibrated(weights, cal, str(model_dir))
         else:
-            self.model.set_weight_sets(weights.tolist())
+            self.model.set_weight_sets_numpy(weights)
 
         del weights
         gc.collect()
