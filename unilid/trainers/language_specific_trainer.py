@@ -75,16 +75,26 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
         reestimation_em_mode: str = "soft",
         num_iterations: int = 20,
         byte_level: bool = False,
-        whitespace_token_boundaries: bool = False
+        whitespace_token_boundaries: bool = False,
+        base_em_mode: str | None = None,
+        use_sp_seed_vocab: bool = True,
+        use_sp_em: bool = True
     ):
+        # The shared base vocabulary and the per-language re-estimation are two
+        # separate training steps. base_em_mode selects the first (the em_mode
+        # the parent class trains the base tokenizer with); reestimation_em_mode
+        # selects the second. Defaulting base_em_mode to None keeps the previous
+        # behaviour of using one mode for both.
         super().__init__(
             vocab_size=vocab_size,
             unk_token=unk_token,
             special_tokens=special_tokens,
-            em_mode=reestimation_em_mode,
+            em_mode=reestimation_em_mode if base_em_mode is None else base_em_mode,
             num_iterations=num_iterations,
             byte_level=byte_level,
-            whitespace_token_boundaries=whitespace_token_boundaries
+            whitespace_token_boundaries=whitespace_token_boundaries,
+            use_sp_seed_vocab=use_sp_seed_vocab,
+            use_sp_em=use_sp_em
         )
 
         self.reestimation_em_mode = reestimation_em_mode
@@ -132,8 +142,19 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
             import shutil
             import sentencepiece as spm
 
+            # See the note in em_loop.py: in a source checkout the sentencepiece
+            # submodule directory can satisfy this import as a namespace package
+            # even when the pip package is not installed.
+            if not hasattr(spm, "SentencePieceProcessor"):
+                raise RuntimeError(
+                    "the sentencepiece Python package is not installed "
+                    "(pip install -e '.[train]'); it is needed to read the "
+                    "model spm_train writes")
             if not shutil.which("spm_train"):
-                raise RuntimeError("spm_train executable not found. Make sure sentencepiece is installed and in your PATH.")
+                raise RuntimeError(
+                    "the spm_train executable is not on PATH; build it from "
+                    "the sentencepiece submodule (see the README's Training "
+                    "section) or use a per-language method other than 'sp'")
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 out_prefix = os.path.join(tmpdir, "model")

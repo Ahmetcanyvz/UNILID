@@ -3,7 +3,7 @@ import hashlib
 import multiprocessing
 import platform
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple, Set, Optional, Any
 
 import numpy as np
@@ -168,7 +168,7 @@ class PruningStrategyMixin:
         """Collect metadata about training configuration and corpus"""
         metadata = {
             "version": "1.0",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
             "tokenizer_class": self.__class__.__name__,
             "tokenizer_type": self._get_tokenizer_type(),
         }

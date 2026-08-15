@@ -47,7 +47,8 @@ def train_standard_tokenizer(corpus_info,
                              use_intersection_pruning=False,
                              pruning_criterion="exact_loss",
                              initial_vocab_tokens=None,
-                             use_sp_seed_vocab=True
+                             use_sp_seed_vocab=True,
+                             use_sp_em=True
                              ):
     """Train a standard UnigramLM tokenizer on all languages."""
     from unilid.trainers.standard_trainer import StandardUnigramLMTokenizer
@@ -72,7 +73,8 @@ def train_standard_tokenizer(corpus_info,
         use_intersection_pruning=use_intersection_pruning,
         pruning_criterion=pruning_criterion,
         initial_vocab_tokens=initial_vocab_tokens,
-        use_sp_seed_vocab=use_sp_seed_vocab
+        use_sp_seed_vocab=use_sp_seed_vocab,
+        use_sp_em=use_sp_em
     )
     tokenizer.train(train_files, output_path, corpus_info=corpus_info)
 
@@ -204,13 +206,25 @@ def train_language_specific_tokenizer(corpus_info, vocab_size=8000,
                                       tokenizer_path_format=None,
                                       load_base_if_exists=True,
                                       load_tokenizers_if_exists=False,
-                                      use_sentencepiece=True):
+                                      use_sentencepiece=True,
+                                      base_em_mode=None,
+                                      use_sp_seed_vocab=True,
+                                      use_sp_em=True):
+    """Train a shared base tokenizer plus one token distribution per language.
+
+    ``use_sentencepiece`` selects the per-language re-estimation method only.
+    The base tokenizer is trained separately, under ``base_em_mode`` (default:
+    ``reestimation_em_mode``); when that resolves to "soft" or "hard" the base
+    step runs the custom EM loop, which uses the spm_train binary unless both
+    ``use_sp_seed_vocab`` and ``use_sp_em`` are False.
+    """
     from unilid.trainers.language_specific_trainer import (
         DEFAULT_BASE_NAME,
         LanguageSpecificUnigramLMTokenizer,
     )
 
-    tok = LanguageSpecificUnigramLMTokenizer(vocab_size=vocab_size, reestimation_em_mode=reestimation_em_mode, byte_level=byte_level)
+    tok = LanguageSpecificUnigramLMTokenizer(vocab_size=vocab_size, reestimation_em_mode=reestimation_em_mode, byte_level=byte_level,
+                                             base_em_mode=base_em_mode, use_sp_seed_vocab=use_sp_seed_vocab, use_sp_em=use_sp_em)
     if not base_tokenizer_path:
         base_tokenizer_path = os.path.join(output_dir, DEFAULT_BASE_NAME)
 

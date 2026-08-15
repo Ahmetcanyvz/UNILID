@@ -18,6 +18,27 @@ if str(REPO_ROOT) not in sys.path:
 from tokenizers import Tokenizer  # noqa: E402
 from tokenizers.models import Unigram  # noqa: E402
 
+
+def sentencepiece_available() -> bool:
+    """The sp training path needs two separate artifacts: the compiled
+    spm_train binary, and the sentencepiece Python package that reads the model
+    it writes. Checking only the binary is not enough.
+
+    The import is not enough either. A `sentencepiece/` directory (the
+    submodule) sits at the repository root, which conftest puts on sys.path, so
+    when the pip package is absent the import succeeds and returns that
+    directory as a namespace package. Hence the attribute check.
+    """
+    import shutil
+
+    if shutil.which("spm_train") is None:
+        return False
+    try:
+        import sentencepiece as spm
+    except ImportError:
+        return False
+    return hasattr(spm, "SentencePieceProcessor")
+
 # A 4-token vocabulary shared by every test that needs a minimal base
 # tokenizer. List order fixes the vocab ids: <unk>=0, a=1, b=2, ab=3 (the
 # tokenizers Unigram model assigns ids by position in the constructor's vocab

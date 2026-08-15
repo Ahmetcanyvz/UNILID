@@ -23,6 +23,15 @@ try:
 except Exception:
     spm = None
 
+# A `sentencepiece/` directory (the submodule) sits at the repository root, so
+# in a source checkout `import sentencepiece` resolves to it as a namespace
+# package whenever the real pip package is absent: the import then succeeds and
+# yields a module with none of the API. Test for what is actually used, not for
+# None, or every `spm is None` guard below is dead in exactly the setup that
+# needs it.
+if spm is not None and not hasattr(spm, "SentencePieceProcessor"):
+    spm = None
+
 from tokenizers import Tokenizer, pre_tokenizers
 from tokenizers.models import Unigram
 from tokenizers.trainers import UnigramTrainer
@@ -35,6 +44,22 @@ from unilid.encoding import get_baseline_characters, get_baseline_bytes
 from unilid.vocab_io import _load_custom_vocab_from_file
 
 logger = logging.getLogger(__name__)
+
+
+def _require_spm_train(flag_name: str, cli_flag: str) -> None:
+    """Fail with the binary name and the fix before shelling out to spm_train.
+
+    The `spm` module guard above this call tests for the sentencepiece pip
+    package, which is a different artifact: the CLI is built from the
+    sentencepiece submodule. Without this check a missing binary surfaces as a
+    bare FileNotFoundError from subprocess.run several frames down.
+    """
+    if shutil.which("spm_train") is None:
+        raise RuntimeError(
+            f"{flag_name}=True needs the spm_train executable from the bundled "
+            f"sentencepiece fork on PATH; build it (see the README's Training "
+            f"section), or pass {flag_name}=False (train.py: {cli_flag}) to use "
+            f"the pure-Python path instead")
 
 
 @dataclass
@@ -624,6 +649,7 @@ class EMLoopMixin:
         """
         if spm is None:
             raise RuntimeError("sentencepiece is not installed but use_sp_seed_vocab=True")
+        _require_spm_train("use_sp_seed_vocab", "--base-seed-vocab hf")
 
         seed_vocab_size = self.vocab_size * constants.INITIAL_VOCAB_MULT_FACTOR
 
@@ -681,7 +707,8 @@ class EMLoopMixin:
             text_paths: str
         ) -> Dict[str, float]:
             if spm is None:
-                raise RuntimeError("spm_train executable not found. Make sure sentencepiece is installed and in your PATH.")
+                raise RuntimeError("sentencepiece is not installed but use_sp_em=True")
+            _require_spm_train("use_sp_em", "--base-em-impl custom")
 
             tmpdir = self._temp_dir
             out_prefix = os.path.join(tmpdir, "model")

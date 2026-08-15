@@ -287,6 +287,17 @@ def main():
                     choices=["sp", "soft", "hard"],
                     help="Per-language probability estimation: sp = SentencePiece EM (C, fastest), "
                          "soft/hard = custom EM (default: sp)")
+    tr.add_argument("--base-seed-vocab", type=str, default="sp",
+                    choices=["sp", "hf"],
+                    help="Initial vocabulary for --base-training-method soft/hard: "
+                         "sp = SentencePiece suffix-array seeding (needs the spm_train "
+                         "binary), hf = HuggingFace seeding (pure Python). Ignored by the "
+                         "hf and bpe base methods (default: sp)")
+    tr.add_argument("--base-em-impl", type=str, default="sp",
+                    choices=["sp", "custom"],
+                    help="EM implementation for --base-training-method soft/hard: "
+                         "sp = SentencePiece (needs the spm_train binary), custom = pure "
+                         "Python. Ignored by the hf and bpe base methods (default: sp)")
     tr.add_argument("--byte-level", dest="byte_level",
                     action="store_true", default=True,
                     help="Use byte-level tokenization (default)")
@@ -457,6 +468,8 @@ def main():
             em_mode=args.base_training_method,
             byte_level=args.byte_level,
             initial_vocab_tokens=args.initial_vocab,
+            use_sp_seed_vocab=(args.base_seed_vocab == "sp"),
+            use_sp_em=(args.base_em_impl == "sp"),
         )
         if shared_sampled_corpus is not None:
             train_files = list(shared_sampled_corpus.values())
@@ -592,6 +605,8 @@ def main():
         "method": {
             "vocab_size": vocab_size,
             "base_training_method": args.base_training_method,
+            "base_seed_vocab": args.base_seed_vocab,
+            "base_em_impl": args.base_em_impl,
             "per_lang_counts_method": args.per_lang_counts_method,
             "byte_level": args.byte_level,
             "seed": args.seed,

@@ -2,7 +2,7 @@ import json
 import multiprocessing
 import platform
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any
 
@@ -51,7 +51,7 @@ def _create_base_metadata(tokenizer_class: str, tokenizer_type: str) -> Dict[str
     try:
         return {
             "version": "1.0",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
             "tokenizer_class": str(tokenizer_class),
             "tokenizer_type": str(tokenizer_type),
             "environment_info": {
@@ -63,7 +63,7 @@ def _create_base_metadata(tokenizer_class: str, tokenizer_type: str) -> Dict[str
     except Exception as e:
         return {
             "version": "1.0",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z",
             "tokenizer_class": str(tokenizer_class),
             "tokenizer_type": str(tokenizer_type),
             "environment_info": {}

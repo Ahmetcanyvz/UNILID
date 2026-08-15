@@ -1,0 +1,88 @@
+name: tests
+
+on:
+  push:
+    branches: [main, release]
+  pull_request:
+
+jobs:
+  # The Rust extension is an abi3 build (pyo3 abi3-py39), so one wheel serves
+  # every supported interpreter and the matrix below costs one compile.
+  build-extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # Only the tokenizers submodule. The sentencepiece one is a large C++
+      # tree needed solely to build the spm_train binary, which this workflow
+      # deliberately does not install (see the test job).
+      - name: Check out the tokenizers submodule
+        run: git submodule update --init tokenizers
+
+      # The fork pins its toolchain in tokenizers/bindings/python/rust-toolchain,
+      # so rustup fetches that exact version here rather than using whatever the
+      # runner image ships.
+      - name: Install the pinned Rust toolchain
+        run: |
+          cd tokenizers/bindings/python
+          rustup show active-toolchain
+          rustc --version
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tokenizers/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('tokenizers/bindings/python/Cargo.lock') }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build the tokenizers extension
+        run: |
+          pip install maturin
+          maturin build --release -m tokenizers/bindings/python/Cargo.toml -o dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tokenizers-wheel
+          path: dist/*.whl
+
+  test:
+    needs: build-extension
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tokenizers-wheel
+          path: dist
+
+      # No SentencePiece build anywhere in this job, on purpose: it holds the
+      # documented minimal install to being green, with the sp-path tests
+      # skipping rather than failing.
+      - name: Install
+        run: |
+          pip install dist/*.whl
+          pip install -e ".[dev]"
+
+      - name: Check the setup
+        run: python doctor.py
+
+      - name: Run the tests
+        run: python -m pytest tests/ -q -rs
