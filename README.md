@@ -18,11 +18,8 @@ Prerequisites:
 - cmake and a C++ compiler, only if you build the optional SentencePiece CLI (used by the `sp` training method)
 
 ```bash
-# Clone with submodules (required for the custom tokenizers).
-# Until https://github.com/Ahmetcanyvz/UNILID/pull/1 is merged, this version
-# lives on the calibration-release branch of the cimeister fork:
-git clone --recurse-submodules -b calibration-release https://github.com/cimeister/UNILID.git && cd UNILID
-# after the merge: git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
+# Clone with submodules (required for the custom tokenizers)
+git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
 
 python3 -m venv .venv
 source .venv/bin/activate
