@@ -373,10 +373,12 @@ score from a single model-wide constant and the other three are reachable only
 by text containing those literal substrings. Mass placed on them would be mass
 taken from the tokens that do decide a prediction, lowering all of them by a
 constant. Models trained before version 0.3.0 do carry such mass, the released
-1,940-language model exactly 0.8 of every row, which is why its unseen-token
-values sit near -19 rather than at the -27.63 training floor. Those files still
-load and score exactly as before; `add_language` matches their scale when
-extending them.
+1,940-language model exactly 0.8 of every row, which lowers each of its real
+tokens by 1.609 nats. That is one reason its unseen-token values sit above the
+-27.63 training floor, at a measured median of -17.66, though not the whole
+reason: removing the mass moves the median only to -16.05, so most of the gap has
+another origin. Those files still load and score exactly as before, and
+`add_language` matches their scale when extending them.
 
 Pack, unpack, and bundle:
 

@@ -60,11 +60,11 @@ Total runtime is a few minutes; everything is written under
 - **The unseen-token constant is a no-op for a model trained by this example.**
   Both trainers leave unseen tokens at the training floor (log 1e-12 = -27.63),
   which is below c = -21, so the one-sided rule leaves such rows unchanged, and
-  `add_language` prints exactly that. The released model's rows sit near -19
-  instead and all 1,940 are lowered to c at load, because it was trained before
-  special tokens were excluded from the distribution: four of them held 0.8 of
-  every row's mass, which left the real tokens a factor of five smaller and the
-  unseen-token plateau correspondingly higher.
+  `add_language` prints exactly that. The released model's rows sit higher, at a
+  measured median of -17.66, and all 1,940 are lowered to c at load. Part of that
+  is the special-token mass it was trained with, which lowered its real tokens by
+  1.609 nats; removing that mass moves the median only to -16.05, so most of the
+  distance from the training floor has another origin.
 - **The two training methods now agree here.** Re-running step 4 with
   `--method sp` (the SentencePiece path, used for the released model's
   per-language training; needs the built `spm_train` binary) gives the same

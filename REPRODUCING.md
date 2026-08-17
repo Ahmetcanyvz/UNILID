@@ -44,15 +44,20 @@ time, every unseen-token log-probability that lies above the shared constant
 c = -21 (in natural log units) is lowered to exactly c. Values already at or
 below c stay as trained, and the distributions are not renormalized afterwards.
 
-Where the released model's unseen-token values come from, identified after the
-paper: its per-language training placed a fifth of every row's probability mass
-on each of the four special tokens, 0.8 in total, which left the real tokens a
-factor of five smaller and the unseen-token plateau correspondingly higher, near
--19 rather than at the -27.63 training floor. Special-token weights are never
-read when scoring, so this shifted every row by the same amount and the released
-model's predictions are what its published numbers describe. From version 0.3.0
-the trainers place no mass on special tokens, so a newly trained model's
-unseen-token values sit at the floor and the constant is a no-op for it. The
+One contributor to the released model's unseen-token values, identified after the
+paper: its per-language training placed a fifth of every row's probability mass on
+each of the four special tokens, 0.8 in total, leaving every real token a factor
+of five smaller, which is 1.609 nats. Special-token weights are never read when
+scoring, so this shifted every row by the same amount and the released model's
+predictions are what its published numbers describe.
+
+It is only a contributor. Measured over all 1,940 released rows, the unseen-token
+value runs from -19.94 to -13.22 with median -17.66, while the training floor is
+log(1e-12) = -27.63. The 1.609 nats account for about a seventh of that gap, and
+the rest is not explained by this defect. Removing the special-token mass moves
+the range to -18.33 to -11.61, so every row still lies above c = -21 and the
+constant still lowers every row. Version 0.3.0 places no mass on special tokens,
+but that does not make the constant a no-op for a newly trained model. The
 released file is unchanged and still reproduces the paper's rows.
 
 **2. Re-examining close decisions that land in two groups of languages.** The
