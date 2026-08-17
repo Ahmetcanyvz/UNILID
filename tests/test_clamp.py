@@ -99,3 +99,39 @@ def test_non_finite_input_raises():
     W = np.array([[-np.inf, -1.0, -2.0, -1.5]], dtype=np.float32)
     with pytest.raises(UnilidCalibrationError):
         apply_unseen_token_constant(W, TARGET)
+
+
+def test_special_tokens_do_not_hide_the_plateau():
+    """From 0.3.0 the special tokens sit at the training floor, below every real
+    token. A row minimum taken over the whole row is then the special tokens, the
+    unseen-token plateau is never found, and the constant silently does nothing.
+    """
+    from unilid.constants import MIN_TOKEN_LOG_PROB
+
+    # Columns 0..1 are special and parked at the floor; the real tokens are the
+    # rest, whose plateau at -18.0 lies above the target and must be lowered.
+    W = np.array([[MIN_TOKEN_LOG_PROB, MIN_TOKEN_LOG_PROB, -2.0, -18.0, -18.0]],
+                 dtype=np.float32)
+
+    hidden, n_hidden = apply_unseen_token_constant(W, TARGET)
+    assert n_hidden == 0, "without the special columns the plateau is invisible"
+    assert hidden[0, 3] == np.float32(-18.0)
+
+    out, n_mod = apply_unseen_token_constant(W, TARGET, special_idx=[0, 1])
+    assert n_mod == 1
+    assert out[0, 3] == np.float32(TARGET) and out[0, 4] == np.float32(TARGET)
+    # The special columns keep the floor; the constant is not applied to them.
+    assert out[0, 0] == np.float32(MIN_TOKEN_LOG_PROB)
+    assert out[0, 1] == np.float32(MIN_TOKEN_LOG_PROB)
+    assert out[0, 2] == np.float32(-2.0)
+
+
+def test_pre_0_3_0_rows_are_unaffected_by_naming_the_special_columns():
+    """Older files hold their special tokens near the top of the row, so the
+    minimum is the same with or without them and the released model's behaviour
+    does not change."""
+    W = np.array([[-1.6094, -1.6094, -2.0, -17.5, -17.5]], dtype=np.float32)
+    a, na = apply_unseen_token_constant(W, TARGET)
+    b, nb = apply_unseen_token_constant(W, TARGET, special_idx=[0, 1])
+    np.testing.assert_array_equal(a, b)
+    assert na == nb == 1
