@@ -3,8 +3,10 @@
 This example builds a small calibrated model from scratch and then adds a
 fourth language to it with `unilid-add-language`, end to end, on toy data that
 ships with the repository. It needs only the installed package and the built
-tokenizers extension (no model download, no SentencePiece build: every training
-step uses the pure-Python EM path).
+tokenizers extension: no model download, and no SentencePiece build, because
+the base vocabulary is trained with HuggingFace's `UnigramTrainer` and the
+per-language probabilities with the pure-Python soft-EM method, neither of
+which uses the `spm_train` binary.
 
 Run it:
 
@@ -24,9 +26,10 @@ Total runtime is a few minutes; everything is written under
    Line counts: `aaa_Latn` 1,000, `bbb_Latn` 1,000, `ccc_Latn` 300 for the base
    model, `ddd_Latn` 250 for the addition, plus 50 held-out lines each.
 2. **`train.py`** trains the base model on the three base languages
-   (vocabulary 300, byte-level, per-language probabilities via the pure-Python
-   soft-EM method), and **`convert.py`** packs it into a version-1 `.unilid`
-   file.
+   (vocabulary 300, byte-level; the shared vocabulary via HuggingFace's
+   `UnigramTrainer`, which is `--base-training-method hf`, the default, and the
+   per-language probabilities via the pure-Python soft-EM method), and
+   **`convert.py`** packs it into a version-1 `.unilid` file.
 3. **`build_calibration.py`** builds the calibration and bundles it into a
    version-2 file. The constants are part of the artifact: this toy deployment
    states its own corpus-size requirements (`head_n=500`,
@@ -52,19 +55,37 @@ Total runtime is a few minutes; everything is written under
    held-out lines. The script also prints the re-examination statistics of the
    final batch, where the gate is visibly active on this toy model.
 
-## Two observed behaviors worth knowing about
+## Three observed behaviors worth knowing about
 
-- **The unseen-token constant can be a no-op for a soft-EM-trained toy model.**
-  The soft-EM trainer leaves unseen tokens at the training floor
-  (log 1e-12 = -27.63), which is below c = -21, so the one-sided rule leaves
-  such rows unchanged, and `add_language` prints exactly that. The released
-  model's rows all have unseen-token values above c (a byproduct of its
-  training pipeline and data scale) and all 1,940 are lowered to c at load.
-- **The two training methods differ at toy data sizes.** Re-running step 4 with
+- **The unseen-token constant is a no-op for a model trained by this example.**
+  Both trainers leave unseen tokens at the training floor (log 1e-12 = -27.63),
+  which is below c = -21, so the one-sided rule leaves such rows unchanged, and
+  `add_language` prints exactly that. The released model's rows sit higher, at a
+  measured median of -17.66, and all 1,940 are lowered to c at load. Part of that
+  is the special-token mass it was trained with, which lowered its real tokens by
+  1.609 nats; removing that mass moves the median only to -16.05, so most of the
+  distance from the training floor has another origin.
+- **The two training methods now agree here.** Re-running step 4 with
   `--method sp` (the SentencePiece path, used for the released model's
-  per-language training; needs the built `spm_train` binary) also completes and
-  calibrates, but on 250 toy lines it estimates a flatter distribution:
-  held-out accuracy 0.60 against 0.98 for the EM path, with 186 of 250
-  calibration lines own-won against 250 of 250. The release-scale evidence for
-  the `sp` path comes from corpora with thousands to 100,000 lines per
-  language; at toy sizes prefer `--method em`.
+  per-language training; needs the built `spm_train` binary) gives the same
+  held-out accuracy of 0.98, with 250 of 250 calibration lines own-won under
+  both. Before special tokens were excluded, `sp` scored 0.60 with 186 of 250
+  own-won on this same data, because its rows carried that mass and the base
+  model's did not. The release-scale evidence for the `sp` path comes from
+  corpora with thousands to 100,000 lines per language, so the two methods are
+  still not interchangeable at scale, but the toy-size gap was an artifact.
+- **The 0.98 does not carry over to a language built from real text.** The base
+  model here has a 300-token vocabulary learned from three constructed
+  languages whose syllable inventories use about two dozen distinct byte
+  values. `add_language` trains the new language over that fixed vocabulary and
+  cannot extend it, so a language whose text uses a wider byte range (natural
+  language in another script, source code, anything with punctuation or
+  accented characters the toy alphabet lacks) has most of its bytes fall to
+  `<unk>`. The EM trainer logs the UNK share of total subwords on every
+  iteration; a high figure there means the base vocabulary does not cover the
+  new language, and held-out accuracy will be below 0.98. Adding 300 lines of
+  Python source to this toy model measures 0.98 under `--method em` and 0.88
+  under `--method sp`, against a 22% UNK share; the same language added to the
+  released 1,940-language model measures 0.86 and 0.84. The fix is a base model
+  whose vocabulary already covers that range, which for a real language means
+  starting from the released model rather than from this example's toy base.

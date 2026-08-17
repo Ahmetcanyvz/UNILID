@@ -29,7 +29,7 @@ from tokenizers import Tokenizer
 
 from .calibration import Calibration, UnilidCalibrationError, \
     apply_unseen_token_constant, re_examine
-from .constants import MISSING_TOKEN_FILL_LOG_PROB
+from .constants import MISSING_TOKEN_FILL_LOG_PROB, SPECIAL_TOKENS
 
 # Highest container version this reader accepts; distinct from the per-write
 # version, which depends on whether a calibration is bundled (a single shared
@@ -442,6 +442,14 @@ class UnilidModel:
                   "re-estimates them")
         return weights, langs, cal
 
+    def _special_columns(self) -> List[int]:
+        """Column indices of the special tokens, which the unseen-token constant
+        must leave out of each row's minimum. From 0.3.0 they sit at the training
+        floor, below every real token, so including them would hide the plateau
+        the constant exists to lower."""
+        vocab = self.tokenizer.get_vocab()
+        return [vocab[t] for t in SPECIAL_TOKENS.values() if t in vocab]
+
     def _require_scorer_methods(self):
         """The pinned tokenizers fork provides the numpy weight-loading path and
         the calibrated-inference scorers; an older build of the extension is a
@@ -468,7 +476,7 @@ class UnilidModel:
                 f"(uncalibrated) inference.")
         self._runtime = cal.runtime_for(self.langs)
         w_cal, n_mod = apply_unseen_token_constant(
-            weights, cal.unseen_token_constant)
+            weights, cal.unseen_token_constant, self._special_columns())
         print(f"Applied unseen-token constant {cal.unseen_token_constant} "
               f"({n_mod}/{len(self.langs)} languages modified)")
         self.model.set_weight_sets_numpy(w_cal)

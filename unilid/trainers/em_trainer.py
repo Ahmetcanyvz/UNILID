@@ -73,7 +73,7 @@ class EMUnigramTrainer:
             )
             usage_counts.update(c_dict)
             unk_occ = usage_counts[self.unk_token]
-            unk_percent = unk_occ/total_subwords
+            unk_percent = 100.0 * unk_occ / total_subwords if total_subwords else 0.0
             logger.info(f"{unk_occ} UNK counts out of {total_subwords} total subwords ({unk_percent:.5f}%)")
 
             if total_subwords > 0:

@@ -381,21 +381,39 @@ class CalibrationRuntime:
 
 # ------------------------------------------------------------------- the clamp
 
-def apply_unseen_token_constant(W: np.ndarray, target: float
+def apply_unseen_token_constant(W: np.ndarray, target: float,
+                                special_idx: Sequence[int] = ()
                                 ) -> Tuple[np.ndarray, int]:
     """One-sided clamp of each language's unseen-token log-probabilities to
     ``target``. Port of analysis/floor_equalization.build_equalized_weights:
     a row's unseen tokens are its exact minimum-value plateau; the plateau is
     lowered to ``target`` only when it lies above it; rows whose minimum is at or
     below ``target`` are left entirely untouched. No renormalization (the scorer
-    compares unnormalized log-weight sums)."""
+    compares unnormalized log-weight sums).
+
+    ``special_idx`` names the columns to leave out of the minimum, and must be
+    given for any model trained by version 0.3.0 or later. Those versions park
+    the special tokens at the training floor, below every real token, so a row
+    minimum taken over the whole row is the special tokens rather than the
+    unseen ones: the plateau is never found, the clamp silently does nothing,
+    and the calibration's first correction disappears without a message.
+    Models written before 0.3.0 hold their special tokens near the top of the
+    row instead, so passing their indices changes nothing for those files.
+    """
     out = np.array(W, dtype=np.float32)
+    real = np.ones(out.shape[1], dtype=bool)
+    real[list(special_idx)] = False
+    if not real.any():
+        raise UnilidCalibrationError(
+            "every column was named as a special token; there are no unseen "
+            "tokens left for the constant to apply to")
+    real_cols = np.flatnonzero(real)
     n_mod = 0
     for i in range(out.shape[0]):
         row = out[i]
-        floor = row.min()
+        floor = row[real_cols].min()
         if floor > target:
-            row[row == floor] = np.float32(target)
+            row[real_cols[row[real_cols] == floor]] = np.float32(target)
             n_mod += 1
     if not np.isfinite(out).all():
         raise UnilidCalibrationError(

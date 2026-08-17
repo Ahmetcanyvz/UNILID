@@ -97,13 +97,20 @@ def test_happy_path_small_n_appends_row_and_estimates_tau(
         tmp_path, existing_model_path, monkeypatch):
     train_file = tmp_path / "w_train.txt"
     _write_lines(train_file, "ab", 300)
-    # W's own segmentation score("ab") = max(row[3]=-0.5, row[1]+row[2]=-100)
-    # = -0.5, which beats X(-10.0) and Y(-10.25) on every one of the 300
-    # identical calibration lines, so W wins every line with a constant
-    # margin of -0.5 - (-10.0) = 9.5; np.percentile of a constant array is
-    # that constant at any quantile, so tau = 9.5 regardless of q_L's exact
-    # value (300 < head_n=18000, so q_L is > 0 and this is not zero_strength;
-    # 300 >= min_calib_lines=200, so this is not low_calibration).
+    # The trained row is put on the model's scale before it is stored: its
+    # real-token mass is exp(-50)+exp(-50)+exp(-0.5) = 0.60653, the existing
+    # rows' masses are 0.0134759 and 0.0119855, and the row is shifted to their
+    # median 0.0127307, i.e. by log(0.0127307) - log(0.60653) = -3.8637404 on
+    # every real token.
+    #
+    # W's own segmentation score("ab") is then max(row[3], row[1]+row[2]) =
+    # max(-4.3637404, -107.72748) = -4.3637404, which beats X(-10.0) and
+    # Y(-10.25) on every one of the 300 identical calibration lines, so W wins
+    # every line with a constant margin of -4.3637404 - (-10.0) = 5.6362596;
+    # np.percentile of a constant array is that constant at any quantile, so
+    # tau is that value regardless of q_L (300 < head_n=18000, so q_L is > 0
+    # and this is not zero_strength; 300 >= min_calib_lines=200, so this is not
+    # low_calibration).
     token_scores = {"<unk>": 0.0, "a": -50.0, "b": -50.0, "ab": -0.5}
     monkeypatch.setattr(add_language_mod, "_train_new_language",
                         make_fake_trainer(token_scores))
@@ -121,11 +128,11 @@ def test_happy_path_small_n_appends_row_and_estimates_tau(
     np.testing.assert_array_equal(np.array(weights_out[1]), EXISTING_WEIGHTS[1])
     np.testing.assert_array_equal(
         np.array(weights_out[2]),
-        np.array([0.0, -50.0, -50.0, -0.5], dtype=np.float32))
+        np.array([0.0, -53.86374, -53.86374, -4.3637404], dtype=np.float32))
 
     cal2 = read_calibration(output_path)
     assert cal2.train_counts == {"X": 500, "Y": 200000, "W": 300}
-    expected_row = TauRow(tau=9.5, excluded=False, cause="",
+    expected_row = TauRow(tau=5.63625955581665, excluded=False, cause="",
                           n_scoreable=300, n_self_won=300)
     assert cal2.group_a["W"] == expected_row
     assert cal2.group_a["X"] == _existing_calibration().group_a["X"]  # untouched

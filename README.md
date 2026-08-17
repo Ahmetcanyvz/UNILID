@@ -13,22 +13,26 @@ deployments.
 
 Prerequisites:
 
-- Python 3.9 or newer
-- A Rust toolchain (`cargo`; install via [rustup](https://rustup.rs)) for the mandatory tokenizers build
+- Python 3.9 or newer. The suite is run on 3.9, 3.11, 3.12, 3.13 and 3.14; the Rust extension is an abi3 build, so one compiled extension serves all of them
+- A Rust toolchain for the mandatory tokenizers build. With [rustup](https://rustup.rs) there is nothing to choose: the bundled fork pins its toolchain version and rustup fetches it. Without rustup, 1.85 or newer
 - cmake and a C++ compiler, only if you build the optional SentencePiece CLI (used by the `sp` training method)
 
 ```bash
-# Clone with submodules (required for the custom tokenizers).
-# Until https://github.com/Ahmetcanyvz/UNILID/pull/1 is merged, this version
-# lives on the calibration-release branch of the cimeister fork:
-git clone --recurse-submodules -b calibration-release https://github.com/cimeister/UNILID.git && cd UNILID
-# after the merge: git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
+# Clone with submodules (required for the custom tokenizers)
+git clone --recurse-submodules https://github.com/Ahmetcanyvz/UNILID.git && cd UNILID
+
+# Safe to re-run, and the fix if the clone did not pull the submodule
+git submodule update --init tokenizers
 
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install unilid (prediction needs only this plus the tokenizers build below)
+# Install unilid. This does not install or build the tokenizers extension,
+# so prediction needs the build below as well.
 pip install -e .
+
+# Check the checkout before building
+python doctor.py
 
 # Build the custom tokenizers extension (REQUIRED for inference; standard
 # HuggingFace tokenizers will NOT work)
@@ -38,28 +42,29 @@ cd tokenizers/bindings/python
 unset CONDA_PREFIX  # if using conda
 maturin develop --release
 cd ../../..
+
+# Should now print "ready"
+python doctor.py
 ```
 
-If already cloned without submodules: `git submodule update --init --recursive`.
+`python doctor.py` reports the submodule checkout, the Rust version, the
+SentencePiece CLI, and whether the built extension has the methods model loading
+requires, and prints the fix for whatever is missing. Two build failures it
+exists to catch, because neither error message names its own cause:
 
-Verify the build:
-
-```python
-from tokenizers.models import Unigram
-for method in ("set_weight_sets", "set_weight_sets_numpy",
-               "top_k_of_cached_weight_sets_batch",
-               "tokens_of_cached_weight_set_batch"):
-    assert hasattr(Unigram, method), f"custom tokenizers build missing {method}; rebuild the submodule"
-print("tokenizers extension OK")
-```
-
-These are the methods model loading itself checks for; an older build fails at
-load time with the same rebuild instruction.
+- A Cargo error about `?` weak dependency features and the nightly channel means
+  the toolchain is too old, not that a nightly one is needed. The fork's
+  `rust-toolchain` files pin a version, so rustup users do not see this; anyone
+  building with a distribution-packaged Rust needs 1.85 or newer.
+- A Cargo manifest parse error usually means the `tokenizers` submodule was
+  never checked out. Run `git submodule update --init tokenizers`.
 
 Optional extras: `pip install -e ".[train]"` for training (torch, transformers,
-ujson), `pip install -e ".[dev]"` for the test suite
-(`python -m pytest tests/`). The `sp` training method additionally needs the
-forked SentencePiece CLI; see [Training](#training-a-model) below.
+sentencepiece, ujson), `pip install -e ".[dev]"` for the test suite
+(`python -m pytest tests/`). The suite passes on `[dev]` alone; the two tests
+that exercise the SentencePiece training path skip unless both the `spm_train`
+binary and the `sentencepiece` package are present, which needs the build in
+[Training](#training-a-model) below plus the `[train]` extra.
 
 ## Download a pre-trained model
 
@@ -173,12 +178,30 @@ CLI, `--method em` is pure Python), appends its weight row (existing rows are
 copied byte-identically), and calibrates it from its own data alone: a
 re-examination threshold is estimated from its own training lines when it has
 fewer than 18,000 of them, and it becomes a replacement candidate only with at
-least 100,000. Three caveats are documented in
-[examples/add_language/README.md](examples/add_language/README.md) and the
-paper: the four-language high-entropy group is not recomputed (the one
-non-incremental piece of the calibration), existing languages' thresholds are
-kept, and the 100,000-line candidate requirement is a per-artifact constant
-that an uncapped corpus deployment should choose deliberately.
+least 100,000. Three caveats, stated here and in the paper: the four-language
+high-entropy group is not recomputed (the one non-incremental piece of the
+calibration), existing languages' thresholds are kept, and the 100,000-line
+candidate requirement is a per-artifact constant that an uncapped corpus
+deployment should choose deliberately.
+
+The new row is put on the same scale as the model's existing rows before it is
+stored, and the command prints what it did. Only the probability mass a row
+places on tokens that can affect a score is comparable across languages, and a
+row carrying more of it than the others scores higher by a constant per
+token, for reasons that have nothing to do with the language. Models written before special
+tokens were excluded from the distribution hold part of their mass on those
+tokens, the released model exactly 0.2 of it, so a freshly trained row is scaled
+down to match rather than being given a silent advantage over all 1,940
+languages already in the file.
+
+The new language is trained over the base model's existing vocabulary, which
+`add_language` cannot extend. A language whose text uses byte values that
+vocabulary does not cover has most of its input fall to `<unk>`, and its
+accuracy stays poor however much training data it has. For a real language that
+means starting from the released 1,940-language model rather than from a small
+model of your own: the toy walkthrough's 0.98 comes from a 300-token vocabulary
+over constructed data and does not carry over. The third bullet of
+[examples/add_language/README.md](examples/add_language/README.md) covers this.
 
 `unilid-calibrate` manages the calibration artifact directly:
 
@@ -204,13 +227,30 @@ The default per-language method (`sp`) requires the forked SentencePiece CLI
 (both the pip package from the `[train]` extra and the compiled binary):
 
 ```bash
+git submodule update --init sentencepiece   # not pulled by the install steps above
 cd sentencepiece && mkdir -p build && cd build
 cmake .. && make -j$(nproc) && sudo make install   # or -DCMAKE_INSTALL_PREFIX=$HOME/.local
 cd ../..
 ```
 
-Verify with `spm_train --help`. The pure-Python `soft`/`hard` methods need no
-binary.
+Verify with `spm_train --help`, or `python doctor.py`.
+
+Which steps need that binary, exactly. The base tokenizer and the per-language
+probabilities are two separate training steps with separate flags:
+
+| Step | Flag | Needs `spm_train` |
+|------|------|-------------------|
+| Base vocabulary | `--base-training-method hf` (default) or `bpe` | no |
+| Base vocabulary | `--base-training-method soft` or `hard` | yes, unless both `--base-seed-vocab hf` and `--base-em-impl custom` are set |
+| Per-language | `--per-lang-counts-method sp` (default) | yes |
+| Per-language | `--per-lang-counts-method soft` or `hard` | no |
+
+The custom EM base methods use SentencePiece for two sub-steps by default:
+suffix-array seeding of the initial vocabulary (`--base-seed-vocab`) and the
+maximization step (`--base-em-impl`). Both defaults are `sp`, so
+`--base-training-method soft` alone still needs the binary. A missing binary is
+an error naming the flag that asked for it, never a silent switch to another
+method.
 
 ### Input formats
 
@@ -239,9 +279,10 @@ __label__deu Hallo Welt
 python train.py --fasttext data/glotlid/train.txt --vocab-size 100000 \
     --byte-level --max-base-samples-per-lang 10000
 
-# Custom EM for both base and languages (no SentencePiece binary needed)
+# Custom EM for both base and languages, with no SentencePiece binary anywhere
 python train.py --wili-dir data/wili/ --vocab-size 50000 \
-    --base-training-method soft --per-lang-counts-method hard
+    --base-training-method soft --base-seed-vocab hf --base-em-impl custom \
+    --per-lang-counts-method hard
 
 # Resume a partially completed run
 python train.py --fasttext data/train.txt --vocab-size 100000 \
@@ -263,6 +304,8 @@ python train.py --fasttext data/train.txt --vocab-size 100000 \
 |------|---------|-------------|
 | `--vocab-size` | `100000` | Vocabulary size |
 | `--base-training-method` | `hf` | Base tokenizer training: `hf` (HuggingFace UnigramTrainer), `bpe` (HuggingFace BPE), `soft` (custom soft-EM), `hard` (custom hard-EM) |
+| `--base-seed-vocab` | `sp` | Initial vocabulary for the `soft`/`hard` base methods: `sp` (SentencePiece suffix-array seeding, needs `spm_train`), `hf` (pure Python). Ignored by `hf` and `bpe`. |
+| `--base-em-impl` | `sp` | EM implementation for the `soft`/`hard` base methods: `sp` (needs `spm_train`), `custom` (pure Python). Ignored by `hf` and `bpe`. |
 | `--per-lang-counts-method` | `sp` | Per-language probability estimation: `sp` (SentencePiece EM, C implementation), `soft` (custom soft-EM), `hard` (custom hard-EM). All use EM; `sp` is fastest. |
 | `--byte-level / --char-level` | `--byte-level` | Byte-level or character-level tokenization |
 | `--initial-vocab FILE` | None | Seed vocabulary from an existing tokenizer (`.json`) or a text file (one token per line) |
@@ -322,6 +365,20 @@ The stored weights are always the base (unclamped) matrix; the unseen-token
 constant is applied at load time when calibrated inference is active, so one
 file serves both modes. Package version 0.1.0 rejects version-2 files with an
 error rather than silently returning base predictions.
+
+Each row is a distribution over the vocabulary's real tokens. The four special
+tokens (`<s>`, `</s>`, `<pad>`, `<unk>`) hold no probability mass: their stored
+weights are never read when scoring, because the scorer takes its unknown-token
+score from a single model-wide constant and the other three are reachable only
+by text containing those literal substrings. Mass placed on them would be mass
+taken from the tokens that do decide a prediction, lowering all of them by a
+constant. Models trained before version 0.3.0 do carry such mass, the released
+1,940-language model exactly 0.8 of every row, which lowers each of its real
+tokens by 1.609 nats. That is one reason its unseen-token values sit above the
+-27.63 training floor, at a measured median of -17.66, though not the whole
+reason: removing the mass moves the median only to -16.05, so most of the gap has
+another origin. Those files still load and score exactly as before, and
+`add_language` matches their scale when extending them.
 
 Pack, unpack, and bundle:
 
@@ -395,8 +452,9 @@ from unilid import (
 )
 ```
 
-The training helpers need the `[train]` extra; they are imported lazily so a
-prediction-only install works without it. `CorpusTokenizer`
+Running the training helpers needs the `[train]` extra; they are imported lazily
+so a prediction-only install, and the `[dev]` test suite, work without it.
+`CorpusTokenizer`
 (`python -m unilid.corpus_tokenizer`) batch-tokenizes corpora with existing
 tokenizers. Lower-level trainer classes (`StandardUnigramLMTokenizer`,
 `LanguageSpecificUnigramLMTokenizer`, `EMUnigramTrainer`) expose `encode_lang`,
@@ -433,6 +491,7 @@ UNILID/
   train.py                         # Training entry point (CLI)
   eval.py                          # Bulk prediction / evaluation (CLI, base inference)
   convert.py                       # Pack/unpack .unilid files (CLI)
+  doctor.py                        # Setup checker (submodules, Rust, extension)
   REPRODUCING.md                   # Paper-results reproduction guide
   sentencepiece/                   # Forked SentencePiece (git submodule)
   tokenizers/                      # Forked HF tokenizers with fast inference (git submodule)

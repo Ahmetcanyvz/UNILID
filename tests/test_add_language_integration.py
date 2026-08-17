@@ -1,19 +1,25 @@
 """End-to-end add-language integration tests: the REAL trainer runs (no
-monkeypatching), on tiny constructed corpora. Mirrors the worked example in
-examples/add_language at a smaller size so the whole flow stays fast.
+monkeypatching), on tiny constructed corpora. Uses the same base-training
+method as the worked example in examples/add_language (HuggingFace's
+UnigramTrainer, byte-level) at a smaller vocabulary and line count, so the
+whole flow stays fast.
 
 Covers: base training -> v1 container -> calibration bootstrap -> v2 bundle ->
 add_language with the pure-Python EM trainer -> prediction quality on held-out
 lines of the added language, row byte-identity, and the calibration update.
-The SentencePiece-method variant runs only where the spm_train binary exists.
+
+Everything here runs without SentencePiece. The two tests that need it, the
+add-language sp variant and the base-vocabulary seeding path, are skipped
+unless both the spm_train binary and the sentencepiece package are present.
 """
 import random
-import shutil
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+from .conftest import sentencepiece_available
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -87,6 +93,12 @@ def toy_setup(tmp_path_factory):
         output_dir=str(tok_dir),
         byte_level=True,
         use_sentencepiece=False,
+        # The base vocabulary is a separate training step from the per-language
+        # re-estimation that use_sentencepiece selects. "hf" is train.py's
+        # default and what examples/add_language/run_example.sh therefore runs,
+        # and it needs no spm_train binary, so this module runs on an install
+        # without the SentencePiece CLI.
+        base_em_mode="hf",
     )
     assert result and set(result["language_paths"]) == set(base_langs)
 
@@ -179,8 +191,59 @@ def test_add_language_em_provenance_and_input_untouched(toy_setup):
     assert added[-1]["lang"] == "ddd_Latn" and added[-1]["method"] == "em"
 
 
-@pytest.mark.skipif(shutil.which("spm_train") is None,
-                    reason="spm_train binary not on PATH")
+@pytest.mark.skipif(not sentencepiece_available(),
+                    reason="needs the spm_train binary and the "
+                           "sentencepiece package")
+def test_sp_seed_vocab_runs(tmp_path):
+    """The base-vocabulary SentencePiece seeding path still works.
+
+    The toy_setup fixture builds its base tokenizer with base_em_mode="hf", so
+    nothing else in the suite reaches _sp_seed_vocab; without this test that
+    code path would have no coverage at all.
+    """
+    from unilid.trainers.standard_trainer import StandardUnigramLMTokenizer
+
+    rng = random.Random(99)
+    corpus = tmp_path / "corpus.txt"
+    corpus.write_text("\n".join(_sentence(rng, SYLLABLES["aaa_Latn"])
+                                for _ in range(300)) + "\n")
+
+    tok = StandardUnigramLMTokenizer(vocab_size=50, em_mode="soft",
+                                     byte_level=True)
+    vocab = tok._sp_seed_vocab([str(corpus)])
+
+    assert isinstance(vocab, set) and len(vocab) > 50
+    assert all(isinstance(t, str) for t in vocab)
+
+
+@pytest.mark.parametrize("method_name,flag", [("_sp_seed_vocab", "use_sp_seed_vocab"),
+                                              ("_sp_em", "use_sp_em")])
+def test_sp_paths_name_the_missing_binary(monkeypatch, method_name, flag):
+    """A missing spm_train is a named error, not a bare FileNotFoundError from
+    subprocess several frames down."""
+    from unilid.trainers import em_loop
+    from unilid.trainers.standard_trainer import StandardUnigramLMTokenizer
+
+    # Pin both preconditions so the assertion is about the binary check alone,
+    # whatever the running environment happens to have installed.
+    monkeypatch.setattr(em_loop, "spm", object())
+    monkeypatch.setattr(em_loop.shutil, "which", lambda name: None)
+
+    tok = StandardUnigramLMTokenizer(vocab_size=50, em_mode="soft",
+                                     byte_level=True)
+    with pytest.raises(RuntimeError) as excinfo:
+        if method_name == "_sp_seed_vocab":
+            tok._sp_seed_vocab(["nonexistent.txt"])
+        else:
+            tok._sp_em({"a": 0}, "nonexistent.txt")
+
+    assert "spm_train" in str(excinfo.value)
+    assert flag in str(excinfo.value)
+
+
+@pytest.mark.skipif(not sentencepiece_available(),
+                    reason="needs the spm_train binary and the "
+                           "sentencepiece package")
 def test_add_language_sp_end_to_end(toy_setup):
     """The SentencePiece path completes and calibrates; accuracy is not
     asserted at the EM path's level (at toy data sizes the sp trainer

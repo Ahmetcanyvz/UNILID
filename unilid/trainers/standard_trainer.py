@@ -9,7 +9,6 @@ import random
 import time
 from typing import Dict, List, Tuple, Set, Optional, Union
 
-import torch
 import numpy as np
 
 from tokenizers import Tokenizer, pre_tokenizers, decoders
@@ -175,6 +174,11 @@ class StandardUnigramLMTokenizer(EMLoopMixin, PruningStrategyMixin):
         return_tensors=None,
         **kwargs,
     ):
+        # lazy: torch is in the [train] extra and is used nowhere else in this
+        # module, so a prediction-only or [dev]-only install must not need it to
+        # import the trainer.
+        import torch
+
         if not isinstance(encoded_inputs, (list, tuple)):
             encoded_inputs = [encoded_inputs]
 
