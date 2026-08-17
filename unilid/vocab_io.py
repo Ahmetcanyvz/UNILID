@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from typing import List, Tuple, Any
 
 from unilid import constants
@@ -11,6 +12,52 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Special tokens and probability mass
+# ---------------------------------------------------------------------------
+def special_token_set(extra_unk_token: str = None) -> set:
+    """The tokens that carry no language evidence and must hold no mass."""
+    tokens = set(constants.SPECIAL_TOKENS.values())
+    if extra_unk_token:
+        tokens.add(extra_unk_token)
+    return tokens
+
+
+def renormalize_over_real_tokens(token_logps: dict,
+                                 special_tokens: set = None) -> dict:
+    """Move every unit of probability mass onto tokens that can affect a score.
+
+    No special token's stored weight is ever read when scoring. The Rust
+    scorer takes its unknown-token score from a single global constant
+    (``min_score - K_UNK_PENALTY``, model.rs), not from the per-language row,
+    and ``<s>``/``</s>``/``<pad>`` are reachable only by text containing those
+    literal substrings. Verified by perturbation: setting all four entries of
+    every row to -500 changes predicted scores by 0.000000.
+
+    Mass parked on them is therefore mass taken away from the tokens that do
+    contribute, which lowers every real token by a constant. That constant
+    differs per training method, which is what makes rows trained by different
+    methods incomparable inside one model. So the mass is normalized over the
+    real tokens only and the special tokens are parked at the floor.
+    """
+    special = special_tokens if special_tokens is not None else special_token_set()
+    real = {tk: lp for tk, lp in token_logps.items() if tk not in special}
+    if not real:
+        raise ValueError("no non-special tokens to normalize over; the "
+                         "per-language distribution would be empty")
+
+    m = max(real.values())
+    if not math.isfinite(m):
+        raise ValueError(f"non-finite maximum log-probability {m} over the "
+                         f"real tokens; refusing to write a degenerate row")
+    log_z = m + math.log(sum(math.exp(v - m) for v in real.values()))
+    out = {tk: lp - log_z for tk, lp in real.items()}
+    for tk in token_logps:
+        if tk in special:
+            out[tk] = constants.MIN_TOKEN_LOG_PROB
+    return out
 
 
 # ---------------------------------------------------------------------------

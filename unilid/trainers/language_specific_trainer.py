@@ -16,7 +16,9 @@ from unilid.metadata import _save_tokenizer_metadata, _create_base_metadata
 from unilid.encoding import get_baseline_bytes
 from unilid.tokenizer_builder import _build_unigramlm_hf_tokenizer_from_lprobs
 from unilid.token_encoding import _get_hf_unigram_tokenizer_vocab
-from unilid.vocab_io import _write_sp_seed_vocab_file, write_hf_bytelevel_corpus
+from unilid.vocab_io import (_write_sp_seed_vocab_file, write_hf_bytelevel_corpus,
+                            renormalize_over_real_tokens, special_token_set)
+from unilid import constants
 from unilid.constants import SPECIAL_TOKENS, MIN_TOKEN_LOG_PROB, SP_DEFAULT_ARGS
 from unilid.validation import (
     validate_components,
@@ -200,8 +202,13 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
                     p_hf = p
                     if p_hf not in vocab_dict:
                         additional_tokens.add(p_hf)
-                    if p_hf in set(SPECIAL_TOKENS.values()) | {self.unk_token}:
-                        logp = float(vocab_dict.get(p_hf, 0.0))
+                    if p_hf in special_token_set(self.unk_token):
+                        # Never the base tokenizer's score: HuggingFace stores
+                        # special tokens with score 0.0, which read as a
+                        # log-probability is probability 1.0. Four of those
+                        # dominated the normalization and left every real token
+                        # a factor of five too small.
+                        logp = constants.MIN_TOKEN_LOG_PROB
                     else:
                         logp = float(sp.get_score(i))
                     token_logps[p_hf] = logp
@@ -211,13 +218,18 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
                 for t in vocab_dict.keys():
                     if t not in token_logps:
                         missing_tokens.add(t)
-                        token_logps[t] = float(vocab_dict[t])
-                if missing_tokens:
-                    logger.warning(f"Tokens {missing_tokens} not in sentencepiece model; defaulting to base "
-                                   f"tokenizer log-prob {vocab_dict[t]:.5f}")
-                token_logps = self._log_normalize(token_logps)
+                        token_logps[t] = (constants.MIN_TOKEN_LOG_PROB
+                                          if t in special_token_set(self.unk_token)
+                                          else float(vocab_dict[t]))
+                real_missing = missing_tokens - special_token_set(self.unk_token)
+                if real_missing:
+                    logger.warning(
+                        f"{len(real_missing)} tokens absent from the sentencepiece "
+                        f"model; falling back to the base tokenizer's log-prob for "
+                        f"them (first few: {sorted(real_missing)[:5]})")
 
-                return token_logps
+                return renormalize_over_real_tokens(
+                    token_logps, special_token_set(self.unk_token))
 
     def train(
         self,
@@ -323,6 +335,12 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
                 )
                 token_probs = em_trainer.train(train_file)
                 token_log_probs = {tk: np.log(p) for tk, p in token_probs.items()}
+
+            # One rule for whichever method produced the row: special tokens
+            # never affect a score, so they must not hold probability mass that
+            # would otherwise sit on the tokens that do.
+            token_log_probs = renormalize_over_real_tokens(
+                token_log_probs, special_token_set(self.unk_token))
 
             tok = _build_unigramlm_hf_tokenizer_with_new_lprobs(self.base_tokenizer, token_log_probs, self.unk_token)
             tok.save(str(tk_path))

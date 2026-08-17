@@ -184,6 +184,16 @@ calibration), existing languages' thresholds are kept, and the 100,000-line
 candidate requirement is a per-artifact constant that an uncapped corpus
 deployment should choose deliberately.
 
+The new row is put on the same scale as the model's existing rows before it is
+stored, and the command prints what it did. Only the probability mass a row
+places on tokens that can affect a score is comparable across languages, and a
+row carrying more of it than the others scores higher by a constant per
+token, for reasons that have nothing to do with the language. Models written before special
+tokens were excluded from the distribution hold part of their mass on those
+tokens, the released model exactly 0.2 of it, so a freshly trained row is scaled
+down to match rather than being given a silent advantage over all 1,940
+languages already in the file.
+
 The new language is trained over the base model's existing vocabulary, which
 `add_language` cannot extend. A language whose text uses byte values that
 vocabulary does not cover has most of its input fall to `<unk>`, and its
@@ -355,6 +365,18 @@ The stored weights are always the base (unclamped) matrix; the unseen-token
 constant is applied at load time when calibrated inference is active, so one
 file serves both modes. Package version 0.1.0 rejects version-2 files with an
 error rather than silently returning base predictions.
+
+Each row is a distribution over the vocabulary's real tokens. The four special
+tokens (`<s>`, `</s>`, `<pad>`, `<unk>`) hold no probability mass: their stored
+weights are never read when scoring, because the scorer takes its unknown-token
+score from a single model-wide constant and the other three are reachable only
+by text containing those literal substrings. Mass placed on them would be mass
+taken from the tokens that do decide a prediction, lowering all of them by a
+constant. Models trained before version 0.3.0 do carry such mass, the released
+1,940-language model exactly 0.8 of every row, which is why its unseen-token
+values sit near -19 rather than at the -27.63 training floor. Those files still
+load and score exactly as before; `add_language` matches their scale when
+extending them.
 
 Pack, unpack, and bundle:
 

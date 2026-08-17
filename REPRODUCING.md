@@ -44,6 +44,17 @@ time, every unseen-token log-probability that lies above the shared constant
 c = -21 (in natural log units) is lowered to exactly c. Values already at or
 below c stay as trained, and the distributions are not renormalized afterwards.
 
+Where the released model's unseen-token values come from, identified after the
+paper: its per-language training placed a fifth of every row's probability mass
+on each of the four special tokens, 0.8 in total, which left the real tokens a
+factor of five smaller and the unseen-token plateau correspondingly higher, near
+-19 rather than at the -27.63 training floor. Special-token weights are never
+read when scoring, so this shifted every row by the same amount and the released
+model's predictions are what its published numbers describe. From version 0.3.0
+the trainers place no mass on special tokens, so a newly trained model's
+unseen-token values sit at the floor and the constant is a no-op for it. The
+released file is unchanged and still reproduces the paper's rows.
+
 **2. Re-examining close decisions that land in two groups of languages.** The
 margin of a prediction is the best language's score minus the second-best
 language's score; a small margin means the decision was close. The base model's

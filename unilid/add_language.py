@@ -43,6 +43,7 @@ from .constants import (
     MISSING_TOKEN_FILL_DETECTION_BOUND,
     MISSING_TOKEN_FILL_LOG_PROB,
 )
+from .vocab_io import special_token_set
 from .model_io import (
     UnilidModel,
     _get_vocab_with_scores,
@@ -122,6 +123,84 @@ def _extract_row(tok_path: Path, ref_vocab: dict, vocab_size: int) -> np.ndarray
     return row
 
 
+# Above this ratio between the largest and smallest real-token mass, the model's
+# rows are reported as spread out. Diagnostic only, never fatal: 2.0 is well
+# above the variation one training method produces and well below the factor of
+# five that separates a pre-fix sp row from a corrected one.
+SCALE_SPREAD_REPORT_RATIO = 2.0
+
+
+def _real_token_mass(rows: np.ndarray, real_idx: np.ndarray,
+                     block: int = 64) -> np.ndarray:
+    """Probability mass each row places on the tokens that affect a score.
+
+    Blocked so that a released-scale matrix (1,940 x 100,000) never becomes a
+    float64 temporary of its full size.
+    """
+    rows = np.asarray(rows)
+    if rows.ndim == 1:
+        rows = rows[None, :]
+    out = np.empty(rows.shape[0], dtype=np.float64)
+    for start in range(0, rows.shape[0], block):
+        chunk = np.asarray(rows[start:start + block])[:, real_idx]
+        out[start:start + block] = np.exp(chunk.astype(np.float64)).sum(axis=1)
+    return out
+
+
+def _match_real_token_scale(new_row: np.ndarray, weights, ref_vocab: dict,
+                            lang: str) -> np.ndarray:
+    """Put the new row on the same scale as the model's existing rows.
+
+    Only the tokens that can affect a score matter, and only their mass
+    relative to the other rows'. A row carrying more of it scores higher by a
+    constant per token against every existing language, an advantage that has
+    nothing to do with the language.
+
+    Models written before special tokens were excluded from the distribution
+    hold part of their mass on those tokens, so their real-token mass is below
+    one; the released 1,940-language model sits at exactly 0.2. Rescaling the
+    new row to the model's own figure keeps it comparable with what is already
+    there, whichever training method produced either.
+    """
+    specials = special_token_set()
+    real_idx = np.array(sorted(rid for token, rid in ref_vocab.items()
+                               if token not in specials), dtype=np.int64)
+    if real_idx.size == 0:
+        raise RuntimeError("the base vocabulary has no non-special tokens")
+
+    existing = _real_token_mass(np.asarray(weights), real_idx)
+    lo, hi = float(existing.min()), float(existing.max())
+    if lo <= 0.0 or not np.isfinite(hi):
+        raise RuntimeError(
+            f"the model's existing rows put no usable probability mass on real "
+            f"tokens (min {lo:.6g}, max {hi:.6g}); refusing to add a language "
+            f"to an artifact whose rows cannot be compared")
+    # Some spread is normal: before special tokens were excluded, a row's real
+    # mass was 1 - p(unk), which differs per language. A wide spread is worth
+    # saying out loud, but it is not an error, and the median is still the best
+    # available target.
+    if hi / lo > SCALE_SPREAD_REPORT_RATIO:
+        print(f"Note: the model's rows put between {lo:.6g} and {hi:.6g} of "
+              f"their probability mass on real tokens across "
+              f"{len(existing):,} languages. {lang!r} is matched to the "
+              f"median; if those rows came from different training methods "
+              f"they were already not comparable with each other")
+
+    target = float(np.median(existing))
+    new_mass = float(_real_token_mass(new_row, real_idx)[0])
+    shift = np.float32(np.log(target) - np.log(new_mass))
+    if abs(float(shift)) < 1e-6:
+        print(f"Row scale: real-token mass {new_mass:.6g} already matches the "
+              f"model's {target:.6g}; no rescaling needed")
+        return new_row
+    out = new_row.copy()
+    out[real_idx] += shift   # specials stay at the floor; they hold no mass
+    print(f"Row scale: real-token mass {new_mass:.6g} rescaled to the model's "
+          f"{target:.6g} ({float(shift):+.4f} nats per token), so {lang!r} is "
+          f"scored on the same footing as the existing languages")
+    return out
+
+
 def add_language(model_path, lang: str, train_file, output_path, *,
                  method: str = "sp", em_rounds: int = 20,
                  calibration: Optional[str] = None,
@@ -194,6 +273,8 @@ def add_language(model_path, lang: str, train_file, output_path, *,
             f"trained tokenizer for {lang!r} is missing {n_fill} of "
             f"{vocab_size} base-vocabulary tokens (assembly fill detected); "
             f"the trainer must produce a score for every base-vocab token")
+
+    new_row = _match_real_token_scale(new_row, weights, ref_vocab, lang)
 
     # Clamp outcome report (the clamp itself is applied at load time, to this
     # row like every other): one-sided, plateau-only.

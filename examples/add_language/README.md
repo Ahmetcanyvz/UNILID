@@ -57,20 +57,23 @@ Total runtime is a few minutes; everything is written under
 
 ## Three observed behaviors worth knowing about
 
-- **The unseen-token constant can be a no-op for a soft-EM-trained toy model.**
-  The soft-EM trainer leaves unseen tokens at the training floor
-  (log 1e-12 = -27.63), which is below c = -21, so the one-sided rule leaves
-  such rows unchanged, and `add_language` prints exactly that. The released
-  model's rows all have unseen-token values above c (a byproduct of its
-  training pipeline and data scale) and all 1,940 are lowered to c at load.
-- **The two training methods differ at toy data sizes.** Re-running step 4 with
+- **The unseen-token constant is a no-op for a model trained by this example.**
+  Both trainers leave unseen tokens at the training floor (log 1e-12 = -27.63),
+  which is below c = -21, so the one-sided rule leaves such rows unchanged, and
+  `add_language` prints exactly that. The released model's rows sit near -19
+  instead and all 1,940 are lowered to c at load, because it was trained before
+  special tokens were excluded from the distribution: four of them held 0.8 of
+  every row's mass, which left the real tokens a factor of five smaller and the
+  unseen-token plateau correspondingly higher.
+- **The two training methods now agree here.** Re-running step 4 with
   `--method sp` (the SentencePiece path, used for the released model's
-  per-language training; needs the built `spm_train` binary) also completes and
-  calibrates, but on 250 toy lines it estimates a flatter distribution:
-  held-out accuracy 0.60 against 0.98 for the EM path, with 186 of 250
-  calibration lines own-won against 250 of 250. The release-scale evidence for
-  the `sp` path comes from corpora with thousands to 100,000 lines per
-  language; at toy sizes prefer `--method em`.
+  per-language training; needs the built `spm_train` binary) gives the same
+  held-out accuracy of 0.98, with 250 of 250 calibration lines own-won under
+  both. Before special tokens were excluded, `sp` scored 0.60 with 186 of 250
+  own-won on this same data, because its rows carried that mass and the base
+  model's did not. The release-scale evidence for the `sp` path comes from
+  corpora with thousands to 100,000 lines per language, so the two methods are
+  still not interchangeable at scale, but the toy-size gap was an artifact.
 - **The 0.98 does not carry over to a language built from real text.** The base
   model here has a 300-token vocabulary learned from three constructed
   languages whose syllable inventories use about two dozen distinct byte
@@ -80,7 +83,9 @@ Total runtime is a few minutes; everything is written under
   accented characters the toy alphabet lacks) has most of its bytes fall to
   `<unk>`. The EM trainer logs the UNK share of total subwords on every
   iteration; a high figure there means the base vocabulary does not cover the
-  new language, and held-out accuracy will be well below 0.98. The fix is a
-  base model whose vocabulary already covers that range, which for a real
-  language means starting from the released 1,940-language model rather than
-  from this example's toy base.
+  new language, and held-out accuracy will be below 0.98. Adding 300 lines of
+  Python source to this toy model measures 0.98 under `--method em` and 0.88
+  under `--method sp`, against a 22% UNK share; the same language added to the
+  released 1,940-language model measures 0.86 and 0.84. The fix is a base model
+  whose vocabulary already covers that range, which for a real language means
+  starting from the released model rather than from this example's toy base.

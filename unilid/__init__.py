@@ -11,7 +11,7 @@ from unilid.model_io import (
 from unilid.calibration import Calibration, TauRow, UnilidCalibrationError, estimate_tau
 from unilid.add_language import add_language
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 # Training-side classes and functions are imported lazily (PEP 562): they pull
 # in the optional [train] dependencies (torch, ujson, transformers), and a
