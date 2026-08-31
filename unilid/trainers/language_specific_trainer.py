@@ -80,7 +80,8 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
         whitespace_token_boundaries: bool = False,
         base_em_mode: str | None = None,
         use_sp_seed_vocab: bool = True,
-        use_sp_em: bool = True
+        use_sp_em: bool = True,
+        max_sentence_length: int = constants.SP_MAX_SENTENCE_LENGTH
     ):
         # The shared base vocabulary and the per-language re-estimation are two
         # separate training steps. base_em_mode selects the first (the em_mode
@@ -101,6 +102,11 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
 
         self.reestimation_em_mode = reestimation_em_mode
         self.num_reestimation_iterations = num_iterations
+        # Passed to the per-language spm_train as --max_sentence_length. Lines
+        # of the byte-level encoded corpus longer than this are SKIPPED by
+        # sentencepiece, not truncated, so this decides which training lines
+        # contribute counts. See constants.SP_MAX_SENTENCE_LENGTH.
+        self.max_sentence_length = int(max_sentence_length)
         self.per_lang_tok: Dict[str, dict] = {}
 
     def load(self, base_path, language_paths=None):
@@ -183,7 +189,7 @@ class LanguageSpecificUnigramLMTokenizer(StandardUnigramLMTokenizer):
                     f"--unk_piece={self.unk_token}",
 
                     f"--num_threads={min(20, multiprocessing.cpu_count()-1)}",
-                    "--max_sentence_length=1000000",
+                    f"--max_sentence_length={self.max_sentence_length}",
                 ] + SP_DEFAULT_ARGS
 
                 logger.info(f"Running SentencePiece CLI command:\n{' '.join(command)}")

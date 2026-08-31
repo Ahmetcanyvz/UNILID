@@ -26,6 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
+from unilid import constants
 from unilid.trainers.standard_trainer import StandardUnigramLMTokenizer
 from unilid.trainers.language_specific_trainer import LanguageSpecificUnigramLMTokenizer
 
@@ -310,6 +311,16 @@ def main():
                          "file with one token per line). The base tokenizer "
                          "will reuse this vocabulary and learn new Unigram "
                          "log-probabilities on your training corpus.")
+    tr.add_argument("--max-sentence-length", type=int,
+                    default=constants.SP_MAX_SENTENCE_LENGTH,
+                    metavar="BYTES",
+                    help="--max_sentence_length for the per-language spm_train "
+                         "(--per-lang-counts-method sp). sentencepiece SKIPS, "
+                         "not truncates, any line of the byte-level encoded "
+                         "corpus longer than this. Default %(default)d keeps "
+                         "every line; sentencepiece's own upstream default is "
+                         "4192. Ignored by the soft/hard per-language methods, "
+                         "which do not shell out to spm_train.")
     tr.add_argument("--seed", type=int, default=42,
                     help="Random seed for reproducibility (default: 42)")
     tr.add_argument("--max-samples", type=int, default=None,
@@ -347,6 +358,17 @@ def main():
     if not args.fasttext and not args.wili_dir and not args.tsv and not args.corpus_dir:
         parser.error("Provide one of: --fasttext FILE, --wili-dir DIR, --tsv FILE, or --corpus-dir DIR")
 
+    # spm_train enforces this range itself (trainer_interface.cc CHECK_RANGE);
+    # rejecting it here fails at submission rather than inside the first batch.
+    if not (constants.SP_MAX_SENTENCE_LENGTH_MIN
+            <= args.max_sentence_length
+            <= constants.SP_MAX_SENTENCE_LENGTH_MAX):
+        parser.error(
+            f"--max-sentence-length {args.max_sentence_length} is outside the "
+            f"range sentencepiece accepts "
+            f"[{constants.SP_MAX_SENTENCE_LENGTH_MIN}, "
+            f"{constants.SP_MAX_SENTENCE_LENGTH_MAX}]")
+
     # ── set random seed ──
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -371,9 +393,10 @@ def main():
     results_dir = args.results_dir or f"results_{vocab_size // 1000}k"
     os.makedirs(results_dir, exist_ok=True)
 
-    logger.info("TRAINING starting | vocab=%d  base=%s  lang=%s  byte_level=%s",
+    logger.info("TRAINING starting | vocab=%d  base=%s  lang=%s  byte_level=%s  "
+                "max_sentence_length=%d",
                 vocab_size, args.base_training_method, args.per_lang_counts_method,
-                args.byte_level)
+                args.byte_level, args.max_sentence_length)
 
     # ── resolve corpus dir ──
     resolved_corpus_dir = args.corpus_dir or os.path.join(results_dir, "corpus")
@@ -550,6 +573,7 @@ def main():
             vocab_size=vocab_size,
             reestimation_em_mode=lang_em_mode,
             byte_level=args.byte_level,
+            max_sentence_length=args.max_sentence_length,
         )
         try:
             batch_paths = tok.train(
@@ -608,6 +632,7 @@ def main():
             "base_seed_vocab": args.base_seed_vocab,
             "base_em_impl": args.base_em_impl,
             "per_lang_counts_method": args.per_lang_counts_method,
+            "max_sentence_length": args.max_sentence_length,
             "byte_level": args.byte_level,
             "seed": args.seed,
             "initial_vocab": os.path.abspath(args.initial_vocab) if args.initial_vocab else None,

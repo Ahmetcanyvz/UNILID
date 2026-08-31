@@ -54,6 +54,23 @@ def _build_gpt2_byte_maps():
 _BYTE_TO_UNI, _UNI_TO_BYTE = _build_gpt2_byte_maps()
 _HF_SPACE = _BYTE_TO_UNI[32]  # typically "Ġ"
 
+# Per-language spm_train's --max_sentence_length, in bytes of the byte-level
+# ENCODED training file (write_hf_bytelevel_corpus's output), not of the raw
+# corpus line. sentencepiece SKIPS any line longer than this outright
+# (src/trainer_interface.cc: `++too_long_lines; continue;`) rather than
+# truncating it, and logs "Skipped N too long sentences.". Upstream's default is
+# 4192 (src/sentencepiece_model.proto: `max_sentence_length = 18 [default =
+# 4192]`); this pipeline has always passed 1,000,000 so that no training line is
+# dropped. Overridable per run with train.py --max-sentence-length; changing it
+# changes which lines contribute counts, so it is a training hyperparameter.
+SP_MAX_SENTENCE_LENGTH = 1_000_000
+# sentencepiece's own accepted range for the flag
+# (src/trainer_interface.cc: CHECK_RANGE(trainer_spec.max_sentence_length(), 10,
+# 1073741824)). Mirrored here only so train.py can reject an out-of-range value
+# before a long job shells out.
+SP_MAX_SENTENCE_LENGTH_MIN = 10
+SP_MAX_SENTENCE_LENGTH_MAX = 1073741824
+
 SP_DEFAULT_ARGS = ["--model_type=unigram",
                     "--normalization_rule_name=identity",
                     "--remove_extra_whitespaces=false",
