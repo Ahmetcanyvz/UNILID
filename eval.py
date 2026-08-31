@@ -32,7 +32,8 @@ def _get_vocab_with_scores(tok: Tokenizer):
 
 def load_model_from_unilid(model_path: Path, base: bool = False):
     """Load from .unilid file (base weights, uncalibrated scoring)."""
-    from unilid.model_io import load_unilid, read_calibration
+    from unilid.model_io import (load_unilid, read_calibration,
+                                 report_generation)
 
     if not base and read_calibration(model_path) is not None:
         raise SystemExit(
@@ -43,6 +44,7 @@ def load_model_from_unilid(model_path: Path, base: bool = False):
             f"predictions.")
 
     base_tok, weights, langs = load_unilid(model_path)
+    report_generation(weights, base_tok, str(model_path), stream=sys.stderr)
 
     print("Pushing weights to Rust cache...", file=sys.stderr)
     base_tok.model.set_weight_sets(np.array(weights).tolist())

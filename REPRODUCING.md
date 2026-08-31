@@ -7,8 +7,10 @@ data each constant was selected on.
 
 ## Which mode reproduces which numbers
 
-- **Base UNILID rows**: load with `calibrated=False` (or use the version-1
-  polybox file). `eval.py` always scores in base mode and refuses a version-2
+- **Base UNILID rows**: load with `calibrated=False`, or use a version-1
+  `.unilid` file: the HuggingFace Hub repository publishes one as
+  `unilid-1940.unilid`, whose weights are identical to those in the version-2
+  file. `eval.py` always scores in base mode and refuses a version-2
   (calibrated) model file unless `--base` is passed, so base numbers cannot be
   produced from a calibrated file by accident.
 - **Calibrated UNILID rows**: the default (`load_model(path)` on the version-2
@@ -41,24 +43,32 @@ unseen token in the text: a text containing tokens unseen by two candidate
 languages is pushed toward the candidate whose unseen-token value happens to be
 higher, for no linguistic reason. The correction removes the offset. At load
 time, every unseen-token log-probability that lies above the shared constant
-c = -21 (in natural log units) is lowered to exactly c. Values already at or
+c = -17 (in natural log units) is lowered to exactly c. Values already at or
 below c stay as trained, and the distributions are not renormalized afterwards.
 
-One contributor to the released model's unseen-token values, identified after the
-paper: its per-language training placed a fifth of every row's probability mass on
-each of the four special tokens, 0.8 in total, leaving every real token a factor
-of five smaller, which is 1.609 nats. Special-token weights are never read when
-scoring, so this shifted every row by the same amount and the released model's
-predictions are what its published numbers describe.
+One contributor to a row's unseen-token value, identified after the paper: the
+per-language training that produced the 2026-08-11 release placed a fifth of
+every row's probability mass on each of the four special tokens, 0.8 in total,
+leaving every real token a factor of five smaller, which is 1.609 nats.
+Special-token weights are never read when scoring, so this shifted every row by
+the same amount, and that release's predictions are what the numbers published
+against it describe.
 
-It is only a contributor. Measured over all 1,940 released rows, the unseen-token
-value runs from -19.94 to -13.22 with median -17.66, while the training floor is
-log(1e-12) = -27.63. The 1.609 nats account for about a seventh of that gap, and
-the rest is not explained by this defect. Removing the special-token mass moves
-the range to -18.33 to -11.61, so every row still lies above c = -21 and the
-constant still lowers every row. Version 0.3.0 places no mass on special tokens,
-but that does not make the constant a no-op for a newly trained model. The
-released file is unchanged and still reproduces the paper's rows.
+It is only a contributor. Measured over all 1,940 rows of that release, the
+unseen-token value runs from -19.94 to -13.22 with median -17.66, while the
+training floor is log(1e-12) = -27.63. The 1.609 nats account for about a
+seventh of that gap, and the rest is not explained by this defect. The weights
+published here carry no special-token mass, which puts their unseen-token values
+at -18.33 to -11.61 with median -16.05. At c = -17 the constant lowers 1,655 of
+the 1,940 rows and leaves the other 285 as trained, so it is neither a no-op nor
+a clamp that every row meets.
+
+Version 0.3.0 parks the special tokens at the training floor, below every real
+token. A row's minimum therefore has to be taken over the real tokens alone;
+taken over the whole row it finds the special tokens, the unseen-token plateau
+is never located, and the constant silently does nothing. Measured on the file
+published here, a 0.2.1 loader modifies 0 of the 1,940 rows where 0.3.0 modifies
+1,655, which is why these weights require 0.3.0 or later.
 
 **2. Re-examining close decisions that land in two groups of languages.** The
 margin of a prediction is the best language's score minus the second-best
@@ -86,17 +96,17 @@ downloadable as `calibration.json`), not in the code.
 
 | Evaluation | Base | Calibrated |
 |------------|------|------------|
-| GlotLID-C test pool (45.4M lines, 1,940 languages), macro F1 | 0.929 | 0.957 |
-| UDHR (parallel, near-equal per-language sample counts), macro F1 | 0.859 | 0.838 |
-| CommonLID (out-of-domain web text, 109 labels), macrolanguage-aware accuracy | 0.845 | 0.860 |
-| CommonLID, tag-level macro F1 | 0.723 | 0.715 |
+| GlotLID-C test pool (45.4M lines, 1,940 languages), macro F1 | 0.933 | 0.956 |
+| UDHR (parallel, near-equal per-language sample counts), macro F1 | 0.856 | 0.842 |
+| CommonLID (out-of-domain web text, 109 labels), macrolanguage-aware accuracy | 0.848 | 0.862 |
+| CommonLID, tag-level macro F1 | 0.722 | 0.717 |
 
 On UDHR, re-examination also moves some correct low-margin predictions, which
 lowers macro F1 on data where every language has similar sample counts. On
 CommonLID (macrolanguage-aware accuracy counts a prediction as correct when it
 matches the label at the language or macrolanguage level), calibration lowers
 the number of lines predicted as languages outside the 109-label set from
-32,901 to 25,884, which raises accuracy, while re-examination moves some
+32,525 to 25,994, which raises accuracy, while re-examination moves some
 correct low-margin lines, which lowers tag-level macro F1. Together the three
 results locate where the gains appear: test data whose per-language line counts
 follow a collection's natural imbalance, over a label set that includes
@@ -106,8 +116,8 @@ wanted.
 ## Version 0.2.0 migration note
 
 Calibrated inference is the default from version 0.2.0. Loading a model without
-a calibration artifact (any version-1 `.unilid` file, including the original
-polybox release and self-trained models) with default arguments raises
+a calibration artifact (any version-1 `.unilid` file, self-trained models
+included) with default arguments raises
 `UnilidCalibrationError`; pass `calibrated=False` or use the version-2
 calibrated release file. Results published for the base model are reproduced
 with `calibrated=False`.

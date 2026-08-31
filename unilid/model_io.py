@@ -21,6 +21,7 @@ UNILID model I/O utilities.
 import gc
 import json
 import struct
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -43,6 +44,48 @@ HEADER_FMT = "<8sIIIII4x"  # magic, version, num_langs, vocab_size, base_tok_len
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 CAL_LEN_FMT = "<Q"
 CAL_LEN_SIZE = struct.calcsize(CAL_LEN_FMT)
+
+# --- Load-time generation report --------------------------------------------
+# The header encodes only version 1 (base) against version 2 (calibration
+# bundled), and FORMAT_VERSION_MAX above means every published reader rejects a
+# version-3 file, so which generation of the trainer wrote a file cannot be
+# recorded in the container without breaking those readers. It is measurable
+# instead, from the probability mass a row places on the tokens that can affect
+# a score.
+#
+# The sp training path before UNILID 0.3.0 gave each special token the base
+# tokenizer's stored score, which HuggingFace writes as 0.0 and that code read
+# as a log-probability, i.e. probability 1.0. Four of them then take four fifths
+# of the normalized mass and the real tokens keep
+# 1 / (1 + number of special tokens) = 0.200. That figure also assumes the real
+# tokens entered the normalization with mass 1; RERELEASE_PLAN discharges the
+# assumption by measurement rather than by derivation, over all 1,940 rows of
+# each stored model. 0.3.0 parks the specials at the training floor and
+# normalizes over the real tokens alone, so they hold all of it.
+#
+# The em training path never had the defect on this scale: it normalized over
+# the whole vocabulary including its unknown token, so a pre-0.3.0 em row's real
+# mass is 1 - p(unk), a little under 1 and different per language. Such a file
+# is reported as corrected when p(unk) is below the tolerance below, and as
+# neither signature when it is not; the warning for that case says so.
+PRE_FIX_SPECIAL_TOKEN_PROB = 1.0
+PRE_FIX_REAL_TOKEN_MASS = 1.0 / (1.0 + PRE_FIX_SPECIAL_TOKEN_PROB
+                                 * len(SPECIAL_TOKENS))
+CORRECTED_REAL_TOKEN_MASS = 1.0
+# Relative tolerance for reading a measured mass as one of those two signatures.
+# Measured over all 1,940 rows: the released model spans 0.19999992 to
+# 0.20000005 and its corrected counterpart 0.99999967 to 1.00000026, both four
+# orders of magnitude inside this bound. A mass outside it is reported as
+# neither signature rather than forced into the nearer one.
+REAL_TOKEN_MASS_RTOL = 1e-3
+# Rows per block of the mass pass. 64 rows of a 100,000-column vocabulary are
+# 51 MB of float64, 78 MB at the 151,670 columns of an LLM-tokenizer base, so no
+# model on record becomes a float64 temporary of its full size.
+# add_language._real_token_mass blocks the same computation by the same figure
+# through a different route (it selects the real columns instead of subtracting
+# the special ones); the two agree whenever the base vocabulary covers every
+# column, which is the only case either is used in.
+REAL_TOKEN_MASS_BLOCK_ROWS = 64
 
 
 def _get_vocab_with_scores(tok: Tokenizer) -> List[Tuple[str, float]]:
@@ -259,6 +302,138 @@ def subset_rows(weights: np.ndarray, langs: List[str],
     return sub_weights, sub_langs
 
 
+def real_token_mass(weights: np.ndarray, special_columns: List[int],
+                    block: int = REAL_TOKEN_MASS_BLOCK_ROWS) -> np.ndarray:
+    """Probability mass each row places on the tokens that can affect a score.
+
+    Exact, not sampled: every row and every column is read. Blocked so that a
+    released-scale matrix (1,940 x 100,000) never becomes a float64 temporary of
+    its full size; ``weights`` may be a memmap, of which only one block is
+    materialized at a time.
+
+    ``special_columns`` are the columns to leave out. The caller locates them by
+    token string, never by position: a base tokenizer converted from an LLM's
+    carries them at non-contiguous high indices, not at 0-3.
+    """
+    rows = np.asarray(weights)
+    if rows.ndim != 2:
+        raise ValueError(f"expected a 2-D weight matrix, got shape {rows.shape}")
+    if block < 1:
+        raise ValueError(f"block must be at least 1 row, got {block}")
+    special = np.asarray(sorted({int(c) for c in special_columns}),
+                         dtype=np.int64)
+    if special.size and (special.min() < 0 or special.max() >= rows.shape[1]):
+        raise ValueError(
+            f"special column(s) {special.tolist()} fall outside the weight "
+            f"matrix's {rows.shape[1]} columns")
+    out = np.empty(rows.shape[0], dtype=np.float64)
+    # A MISSING_TOKEN_FILL_LOG_PROB entry (-1e30) is meant to underflow to 0.0
+    # and contribute nothing; the local errstate says so and keeps a caller's
+    # np.seterr(under="raise") from turning a load into a crash. Overflow and
+    # invalid are deliberately left at the caller's setting: those would mean a
+    # genuinely broken row.
+    with np.errstate(under="ignore"):
+        for start in range(0, rows.shape[0], block):
+            # np.array copies one block out of the memmap.
+            chunk = np.array(rows[start:start + block], dtype=np.float64)
+            np.exp(chunk, out=chunk)
+            total = chunk.sum(axis=1)
+            if special.size:
+                total -= chunk[:, special].sum(axis=1)
+            out[start:start + block] = total
+    return out
+
+
+def special_columns_of(tokenizer) -> List[int]:
+    """Column indices of this package's special tokens in ``tokenizer``.
+
+    Located by token string, never by position: a base tokenizer converted from
+    an LLM's has them at non-contiguous high indices, not at 0-3.
+    """
+    vocab = tokenizer.get_vocab()
+    return [vocab[t] for t in SPECIAL_TOKENS.values() if t in vocab]
+
+
+def report_generation(weights: np.ndarray, tokenizer, source: str = "",
+                      stream=None) -> None:
+    """Print which generation of the trainer wrote a weight matrix, read off the
+    mass its rows put on real tokens: 0.200 per row is the pre-0.3.0 sp path,
+    1.000 is a row normalized over the real tokens alone.
+
+    Stands in for a container-version bump, which is not available:
+    FORMAT_VERSION_MAX = 2, so a version-3 file is unreadable to every published
+    reader.
+
+    Printing only, and never fatal. Nothing here touches a weight, a prediction,
+    or an output artifact, and a measurement that fails for any reason is
+    reported and stepped over: published files must stay loadable.
+    """
+    out = stream if stream is not None else sys.stdout
+    named = source or "this model"
+    try:
+        special = special_columns_of(tokenizer)
+        mass = real_token_mass(weights, special)
+        if mass.size == 0:
+            print(f"Real-token mass: {named} has no rows to measure, so its "
+                  f"generation cannot be read", file=out)
+            return
+        lo, hi = float(mass.min()), float(mass.max())
+        where = (f"columns {special}" if special else
+                 f"none of {', '.join(SPECIAL_TOKENS.values())} is in this "
+                 f"vocabulary")
+        head = (f"Real-token mass {lo:.6f} to {hi:.6f} over {len(mass):,} "
+                f"row{'' if len(mass) == 1 else 's'} "
+                f"(specials: {where}, located by token string)")
+
+        def matches(target: float) -> bool:
+            tol = REAL_TOKEN_MASS_RTOL * target
+            return abs(lo - target) <= tol and abs(hi - target) <= tol
+
+        if matches(CORRECTED_REAL_TOKEN_MASS):
+            print(f"{head}: corrected, {CORRECTED_REAL_TOKEN_MASS:.3f} per row "
+                  f"(UNILID 0.3.0 or later, or an earlier em-trained file whose "
+                  f"unknown-token probability is below "
+                  f"{REAL_TOKEN_MASS_RTOL:g})", file=out)
+            return
+
+        if matches(PRE_FIX_REAL_TOKEN_MASS):
+            factor = CORRECTED_REAL_TOKEN_MASS / PRE_FIX_REAL_TOKEN_MASS
+            print(f"{head}: pre-0.3.0 special-token handling, real-token mass "
+                  f"{PRE_FIX_REAL_TOKEN_MASS:.3f} per row", file=out)
+            print(f"WARNING: {named} was written by the sp training path before "
+                  f"UNILID 0.3.0, which left four fifths of every row on the "
+                  f"special tokens. Every real token here is a factor of "
+                  f"{factor:.1f} ({float(np.log(factor)):.3f} nats) below what "
+                  f"0.3.0 stores for the same corpus, so its rows are not "
+                  f"comparable with a corrected model's. It loads and scores "
+                  f"exactly as it always has. To move it to the corrected "
+                  f"generation, retrain with 0.3.0 or later, or rebuild each "
+                  f"row: read the row as a token-to-log-probability mapping "
+                  f"over the base vocabulary, pass it through "
+                  f"unilid.vocab_io.renormalize_over_real_tokens, write the "
+                  f"result back by token id as float32, and repack with "
+                  f"unilid.model_io.write_unilid.", file=out)
+            return
+
+        print(f"{head}: NEITHER SIGNATURE", file=out)
+        print(f"WARNING: real-token mass {lo:.6f} to {hi:.6f} matches neither "
+              f"the pre-0.3.0 sp signature ({PRE_FIX_REAL_TOKEN_MASS:.3f} per "
+              f"row) nor a fully normalized row "
+              f"({CORRECTED_REAL_TOKEN_MASS:.3f}), within a relative tolerance "
+              f"of {REAL_TOKEN_MASS_RTOL:g}. A mass a little under 1.000 is "
+              f"what the em training path produced before 0.3.0, where the "
+              f"special tokens held only p(unk): those rows are usable, but "
+              f"p(unk) differs per language, so the languages are not on one "
+              f"scale. Any other figure means the rows were not written by a "
+              f"UNILID trainer, or that one file mixes training methods. "
+              f"Loading and scoring continue unchanged; check the provenance of "
+              f"{named} before trusting a prediction from it.", file=out)
+    except Exception as exc:                      # never fatal, by contract
+        print(f"WARNING: could not measure the real-token mass of {named} "
+              f"({type(exc).__name__}: {exc}), so its generation goes "
+              f"unreported. Loading continues.", file=out)
+
+
 def read_calibration(model_path: Path) -> Optional[Calibration]:
     """Read the bundled calibration from a .unilid file.
 
@@ -447,8 +622,7 @@ class UnilidModel:
         must leave out of each row's minimum. From 0.3.0 they sit at the training
         floor, below every real token, so including them would hide the plateau
         the constant exists to lower."""
-        vocab = self.tokenizer.get_vocab()
-        return [vocab[t] for t in SPECIAL_TOKENS.values() if t in vocab]
+        return special_columns_of(self.tokenizer)
 
     def _require_scorer_methods(self):
         """The pinned tokenizers fork provides the numpy weight-loading path and
@@ -498,6 +672,7 @@ class UnilidModel:
         self.normalizer = base_tok.normalizer
         self._lang_to_idx = {lang: i for i, lang in enumerate(self.langs)}
 
+        report_generation(weights, self.tokenizer, str(model_path))
         print("Pushing weights to Rust cache...")
         self._require_scorer_methods()
         if calibrated:
@@ -587,6 +762,7 @@ class UnilidModel:
         self.langs = langs
         self._lang_to_idx = {lang: i for i, lang in enumerate(langs)}
 
+        report_generation(weights, self.tokenizer, str(model_dir))
         print("Pushing weights to Rust cache...")
         self._require_scorer_methods()
         if calibrated:

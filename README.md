@@ -71,11 +71,16 @@ binary and the `sentencepiece` package are present, which needs the build in
 | Model | Languages | Training Data | Calibration | Download |
 |-------|-----------|---------------|-------------|----------|
 | unilid-1940-calibrated | 1940 language-script combinations | 60M samples | bundled (version-2 file) | [HuggingFace Hub](https://huggingface.co/cmeister/unilid-1940) |
-| unilid-1940 | 1940 language-script combinations | 60M samples | none (version-1 file) | [polybox](https://polybox.ethz.ch/index.php/s/Kbb9TWkSSgQ8yoS) |
+| unilid-1940 | 1940 language-script combinations | 60M samples | none (version-1 file) | [HuggingFace Hub](https://huggingface.co/cmeister/unilid-1940) |
 
-Both files contain the same trained model; the calibrated file additionally
-bundles the calibration artifact (160 KB). The file is 780 MB; loading builds
-the float32 weight matrix in memory, so plan for roughly 2 to 3 GB of free RAM.
+The two files store the same weights and differ only in the container. The
+calibrated file bundles the calibration artifact (161 KB), which the same
+repository also offers on its own as `calibration.json`. The stored weights are
+the base ones either way, so that one download serves both modes: pass
+`calibrated=False` for base inference. `unilid-1940.unilid` is the version-1
+file, for base inference without the bundled calibration and for supplying a
+calibration artifact of your own. Either file is 780 MB; loading builds the
+float32 weight matrix in memory, so plan for roughly 2 to 3 GB of free RAM.
 
 ```bash
 pip install huggingface_hub
@@ -83,6 +88,8 @@ python -c "from huggingface_hub import hf_hub_download; \
   print(hf_hub_download('cmeister/unilid-1940', 'unilid-1940-calibrated.unilid', local_dir='.'))"
 # or directly:
 # wget https://huggingface.co/cmeister/unilid-1940/resolve/main/unilid-1940-calibrated.unilid
+# the version-1 file, with no bundled calibration:
+# wget https://huggingface.co/cmeister/unilid-1940/resolve/main/unilid-1940.unilid
 ```
 
 ## Predict
@@ -107,20 +114,27 @@ Prediction defaults to **calibrated inference**: a shared constant replaces
 each language's unseen-token log-probabilities at load time, and close
 decisions that land in two error-prone groups of languages are re-examined
 against each language's own threshold. On the GlotLID-C test pool this raises
-macro F1 from 0.929 to 0.957. The mechanism, the constants, and the full
+macro F1 from 0.933 to 0.956. The mechanism, the constants, and the full
 measured effects (including the evaluations where calibration lowers a metric)
 are described in [REPRODUCING.md](REPRODUCING.md) and specified in the UNILID
 paper.
 
-The original release's uncalibrated behavior is one flag away:
+Base (uncalibrated) inference is one flag away:
 
 ```python
 base_model = load_model("unilid-1940-calibrated.unilid", calibrated=False)
 ```
 
-Loading a model that has no calibration artifact (a version-1 `.unilid` file,
-including the polybox release and self-trained models) with default arguments
-raises `UnilidCalibrationError`; pass `calibrated=False` for such files.
+Loading a model that has no calibration artifact (any version-1 `.unilid`
+file, self-trained models included) with default arguments raises
+`UnilidCalibrationError`; pass `calibrated=False` for such files.
+
+Models trained before 0.3.0 placed a fifth of every row's probability on each of
+the four special tokens. Such a file still loads and still reproduces the
+numbers published against it. To tell the two generations apart, sum the
+probabilities of a row's real tokens: 1.0 for a file trained by 0.3.0 or later,
+0.2 for an earlier one. Version 0.3.0 and later measure this at every load and
+print it.
 
 Batch inference uses Rayon and defaults to all CPU cores; limit it with
 `RAYON_NUM_THREADS=4 python ...`.
@@ -190,9 +204,10 @@ places on tokens that can affect a score is comparable across languages, and a
 row carrying more of it than the others scores higher by a constant per
 token, for reasons that have nothing to do with the language. Models written before special
 tokens were excluded from the distribution hold part of their mass on those
-tokens, the released model exactly 0.2 of it, so a freshly trained row is scaled
-down to match rather than being given a silent advantage over all 1,940
-languages already in the file.
+tokens, the 2026-08-11 release exactly 0.2 of it, so a freshly trained row is
+scaled down to match rather than being given a silent advantage over all 1,940
+languages already in the file. For a model trained by 0.3.0 or later there is
+nothing to scale down, and the command reports which of the two cases it found.
 
 The new language is trained over the base model's existing vocabulary, which
 `add_language` cannot extend. A language whose text uses byte values that
@@ -372,13 +387,33 @@ weights are never read when scoring, because the scorer takes its unknown-token
 score from a single model-wide constant and the other three are reachable only
 by text containing those literal substrings. Mass placed on them would be mass
 taken from the tokens that do decide a prediction, lowering all of them by a
-constant. Models trained before version 0.3.0 do carry such mass, the released
-1,940-language model exactly 0.8 of every row, which lowers each of its real
-tokens by 1.609 nats. That is one reason its unseen-token values sit above the
+constant. Models trained before version 0.3.0 do carry such mass, the
+1,940-language model released on 2026-08-11 exactly 0.8 of every row, which
+lowers each of its real tokens by 1.609 nats. That is one reason its
+unseen-token values sit above the
 -27.63 training floor, at a measured median of -17.66, though not the whole
 reason: removing the mass moves the median only to -16.05, so most of the gap has
 another origin. Those files still load and score exactly as before, and
 `add_language` matches their scale when extending them.
+
+Version 0.3.0 and later state which generation wrote a file, on every load. The
+loader prints the smallest and largest real-token mass over the rows it loaded:
+0.200 per row is what the sp training path produced before 0.3.0, and 1.000 is a
+distribution normalized over the real tokens alone. The measurement is exact,
+over every row and every column, and it is blocked so that a 1,940 by 100,000
+matrix is never converted to float64 in one piece. The special columns are
+located through the tokenizer by token string, not by position, because a base
+tokenizer converted from an LLM's has them at non-contiguous high indices. For a
+pre-0.3.0 sp file the loader adds a warning naming the two routes to the
+corrected generation, then loads the file as before. A mass a little under 1.000
+is what the em training path produced before 0.3.0, where the unknown token's
+probability was the only mass outside the real tokens; that reading and any
+other figure print a longer warning, and the file still loads. No part of the
+report is fatal: a measurement that fails is itself reported, and the load
+continues. `eval.py` prints the same report to standard error. The container
+header cannot record the generation instead: it encodes only version 1 against
+version 2, and `FORMAT_VERSION_MAX = 2` makes a version-3 file unreadable to
+every reader already published.
 
 Pack, unpack, and bundle:
 
