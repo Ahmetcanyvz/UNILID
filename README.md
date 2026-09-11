@@ -1,5 +1,7 @@
 # UNILID
 
+Paper: [What Language is This? Ask Your Tokenizer](https://arxiv.org/abs/2602.17655) (ICML 2026)
+
 Fast multilingual language identification using unigram language models. A
 shared token vocabulary is trained across languages, each language gets its own
 token probability distribution over it, and a text is labeled with the language
@@ -541,4 +543,19 @@ UNILID/
     trainers/                      # Base + per-language trainers (EM, SentencePiece)
     algorithms/                    # Viterbi, forward-backward, EM accumulation
     constants.py, encoding.py, pruning.py, corpus_tokenizer.py, ...
+```
+
+## How to cite
+
+If you use UNILID in your work, please cite the ICML 2026 paper:
+
+```bibtex
+@inproceedings{meister2026unilid,
+  title     = {What Language is This? Ask Your Tokenizer},
+  author    = {Meister, Clara and Yavuz, Ahmetcan and Lesci, Pietro and Pimentel, Tiago},
+  booktitle = {Proceedings of the 43rd International Conference on Machine Learning},
+  year      = {2026},
+  address   = {Seoul, South Korea},
+  url       = {https://arxiv.org/abs/2602.17655}
+}
 ```
